@@ -1,0 +1,60 @@
+name: Crash report
+description: The game crashed or closed unexpectedly with mods installed.
+title: "[Crash] "
+labels: ["crash"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a crash. The zip from `CollectCrashReport.ps1` gives us the logs and crash details we need.
+  - type: textarea
+    id: doing
+    attributes:
+      label: What were you doing when it crashed?
+      description: For example "clicked Mods in the main menu" or "started a run with 2 players".
+    validations:
+      required: true
+  - type: textarea
+    id: mods
+    attributes:
+      label: Which mods were enabled?
+      description: Names and versions if you know them (Mod Menu, Menu Options, Goobies MP, ...).
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Game version
+      description: Shown at the bottom of the game's main menu.
+    validations:
+      required: false
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: How often does it happen?
+      options:
+        - Every time
+        - Often
+        - Once or rarely
+    validations:
+      required: false
+  - type: textarea
+    id: zip
+    attributes:
+      label: Attach the zip from CollectCrashReport.ps1
+      description: |
+        1. Download [`CollectCrashReport.ps1`](https://raw.githubusercontent.com/gregfesta-create/goobies-mod-menu/main/Tools/CollectCrashReport.ps1) (right-click > Save link as).
+        2. Right-click the downloaded file and choose **Run with PowerShell**. If Windows blocks it: right-click > Properties > Unblock.
+        3. Drag `Goobies_crash_report_<date>.zip` from your Desktop into this box.
+
+        If it fails, `Goobies_crash_report_FAILED.txt` on your Desktop explains how to retry with `-GameDir "<your Goobies folder>"`.
+      placeholder: Drag the zip here.
+    validations:
+      required: false
+  - type: checkboxes
+    id: dump-consent
+    attributes:
+      label: Privacy
+      options:
+        - label: I understand the .dmp file in the zip may contain personal information from the game's memory; I can rerun with -NoDump to leave it out.
+          required: true
