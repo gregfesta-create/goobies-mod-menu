@@ -1,0 +1,4 @@
+UE4SS v3.0.1 Beta #0, local runtime commit d935b5b.
+Project: https://github.com/UE4SS-RE/RE-UE4SS
+License source: https://github.com/UE4SS-RE/RE-UE4SS/blob/d935b5b/LICENSE
+Loader binaries and settings are byte-identical to the tested local environment.
