@@ -38,6 +38,8 @@
     "examples/ExampleMod/mod_menu.ini": "443c6fb5ad0a68cb3afa7e66c67700d01636c6752e481d12f09031ed5d082c0b",
     "examples/ExampleMod/Package/main.lua": "4f4feb76d96e962d3bdcb856d86d6755f25d2fb9eba003c16903403c4fef27c3",
     "examples/README.txt": "ae2de0db3d016054673e2e171fd7404ecad0c18977fef228bb211321e9e8a7e3",
-    "Mods/mod_menu/INSTALL.txt": "94772d969f503dbc116ce44d5b1e0712ba9aa7820ce3f6a43ceb7913dd26b735"
+    "Mods/mod_menu/INSTALL.txt": "94772d969f503dbc116ce44d5b1e0712ba9aa7820ce3f6a43ceb7913dd26b735",
+    "Mods/mod_menu/Report a problem.bat": "82e7f13f5232794022e9b00a51af988b917634561e090aed4012a31979c9699e",
+    "Mods/mod_menu/CollectCrashReport.ps1": "7e5cda8cc74bf5d5364b9842477ae53b3eb0c4e165721a063eed4ca5ec12e489"
   }
 }

@@ -1,14 +1,22 @@
 <#
 .SYNOPSIS
-    Collects Goobies crash information into one zip on your Desktop, ready to attach to a GitHub issue.
+    Collects Goobies crash information into one zip, then sends it (when allowed) or leaves it in your Downloads folder.
 .DESCRIPTION
-    Read-only on the game folder; needs no admin rights and no network; never prompts. Copies UE4SS
-    logs, mod configuration, the newest crash folder's context and (if small enough) the newest crash
-    dump. Text files are sanitized: user name, profile folder (long and 8.3 form), computer name,
-    Steam and lobby IDs, IP and e-mail addresses, network host names and the account fields in
+    Read-only on the game folder; needs no admin rights. Copies UE4SS logs, mod configuration, Goobies MP
+    logs and settings (last 5 MB of each appended log), the newest achievement-guard log, the newest crash
+    folder's context and (if small enough) the newest crash dump. Text files are sanitized: user name,
+    profile folder (long and 8.3 form), computer name, Steam IDs (also steam:<id> and masked forms), lobby
+    IDs, IP and e-mail addresses, network host names, webhook URLs and the account fields in
     CrashContext.runtime-xml are replaced. Dump files (.dmp) are binary and cannot be sanitized;
     use -NoDump to leave them out. On failure it writes Goobies_crash_report_FAILED.txt explaining
-    how to retry.
+    how to retry. Without -NoExplorer it then shows the zip and opens the GitHub issue page (-IssueUrl).
+
+    Nothing is uploaded unless a Discord webhook file exists (report_webhook.txt next to this script, or
+    -WebhookFile) AND you answer Y to the question it asks. The webhook address is never printed or saved
+    in the report. With a webhook file the zip is built in %TEMP% and deleted once Discord has it; a report
+    that is not sent (No, or an upload problem) is moved to -OutDir (default: Downloads) and the GitHub page opens.
+    With -Gui (used by "Report a problem.bat", which runs this hidden) the question is a Yes/No popup and
+    a sent report ends with a notice that closes by itself; there is no console window to read.
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File CollectCrashReport.ps1
 .EXAMPLE
@@ -17,15 +25,22 @@
 [CmdletBinding()]
 param(
     [string]$GameDir,        # Goobies folder (common\Goobies, or Goobies_DX11 / Goobies_Vulkan inside it); auto-detected if omitted
-    [string]$OutDir,         # where the zip goes; default is your Desktop
+    [string]$OutDir,         # where an unsent zip goes; default is your Downloads folder
     [string]$CrashesRoot,    # default %LOCALAPPDATA%\Shooter\Saved\Crashes
     [string]$SteamRoot,      # Steam folder; default from the registry (HKCU\Software\Valve\Steam)
     [switch]$NoDump,         # never include a .dmp file
-    [switch]$NoExplorer      # do not open Explorer (or Notepad on failure) at the end
+    [switch]$NoExplorer,     # do not open Explorer, the issue page (or Notepad on failure) at the end
+    [string]$IssueUrl = 'https://github.com/gregfesta-create/goobies-mod-menu/issues/new?template=crash_report.yml',
+    [string]$WebhookFile,    # Discord webhook file; default report_webhook.txt next to this script
+    [long]$UploadLimitBytes = 10MB,  # largest zip sent to Discord (non-boosted servers); a bigger one is re-zipped without the dump
+    [switch]$Gui             # ask and report with popups (the .bat runs this script with no visible window)
 )
 $ErrorActionPreference = 'Stop'
-$Version = '1.1.0'
+$Version = '1.4.2'
 $MaxDumpBytes = 20MB
+$MaxLogBytes = 5MB
+$DefaultIssueUrl = 'https://github.com/gregfesta-create/goobies-mod-menu/issues/new?template=crash_report.yml'
+$WebhookPattern = '^https://(discord\.com|discordapp\.com)/api/webhooks/\d+/[\w-]+$'
 
 function Test-GameRoot([string]$Dir) {
     return $Dir -and (Test-Path -LiteralPath (Join-Path $Dir 'Shooter\Binaries\Win64') -PathType Container)
@@ -96,9 +111,27 @@ function Format-Span([TimeSpan]$Span) {
 
 # Read a text file even while the game still has it open for writing. Honour a BOM; otherwise
 # decode as strict UTF-8 and fall back to the ANSI code page, so non-ASCII names in a cp1252 file still match.
-function Read-Shared([string]$Path) {
+# With -TailBytes, a longer file keeps only its last TailBytes, starting at a whole line, behind a note.
+function Read-Shared([string]$Path, [long]$TailBytes = 0) {
     $fs = [IO.File]::Open($Path, 'Open', 'Read', 'ReadWrite, Delete')
-    try { $ms = New-Object IO.MemoryStream; $fs.CopyTo($ms); $b = $ms.ToArray() } finally { $fs.Dispose() }
+    try {
+        $skip = 0
+        if ($TailBytes -gt 0 -and $fs.Length -gt $TailBytes) { $skip = $fs.Length - $TailBytes; [void]$fs.Seek($skip, 'Begin') }
+        $ms = New-Object IO.MemoryStream; $fs.CopyTo($ms); $b = $ms.ToArray()
+    } finally { $fs.Dispose() }
+    if ($skip -gt 0) {   # drop the partial first line (also avoids a split UTF-8 character)
+        $nl = [Array]::IndexOf($b, [byte]10)
+        $cut = if ($nl -ge 0) { $nl + 1 } else { 0 }
+        $rest = New-Object byte[] ($b.Length - $cut)
+        [Array]::Copy($b, $cut, $rest, 0, $rest.Length)
+        $b = $rest
+        $note = "[CollectCrashReport: first {0:N0} bytes left out; this log keeps only its last {1:N0} MB]`r`n" -f ($skip + $cut), ($TailBytes / 1MB)
+        return $note + (Convert-Bytes $b)
+    }
+    return Convert-Bytes $b
+}
+
+function Convert-Bytes([byte[]]$b) {
     if ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) { return [Text.Encoding]::UTF8.GetString($b, 3, $b.Length - 3) }
     if ($b.Length -ge 2 -and $b[0] -eq 0xFF -and $b[1] -eq 0xFE) { return [Text.Encoding]::Unicode.GetString($b, 2, $b.Length - 2) }
     if ($b.Length -ge 2 -and $b[0] -eq 0xFE -and $b[1] -eq 0xFF) { return [Text.Encoding]::BigEndianUnicode.GetString($b, 2, $b.Length - 2) }
@@ -121,7 +154,10 @@ if ($env:COMPUTERNAME) { $Redactions.Add(@(('(?i)(?<![A-Za-z0-9])' + [regex]::Es
 $octet = '(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)'
 foreach ($rule in @(
         @('(?s)<(UserName|LoginId|EpicAccountId|MachineId|UserActivityHint)>.*?</\1>', '<$1></$1>'),
+        # Goobies MP identity keys: steam:<SteamID64> and the masked log form steam:7656...5678 / steam:7656<ellipsis>5678.
+        @("(?i)(?<![A-Za-z0-9])steam:\d[\d.$([char]0x2026)]*", 'steam:<steamid>'),
         @('(?<!\d)7656119\d{10}(?!\d)', '<steamid>'),
+        @('(?i)https?://(?:[a-z0-9-]+\.)*(?:discord\.com|discordapp\.com)/api/webhooks/\S+', '<webhook>'),
         @('(?<!\d)109775\d{12}(?!\d)', '<lobby>'),
         # Bounded e-mail parts keep this linear on very long tokens.
         @('(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,24}', '<email>'),
@@ -135,13 +171,14 @@ function Protect-Text([string]$Text) {
 }
 
 $included = New-Object System.Collections.Generic.List[string]
+$modVersions = New-Object System.Collections.Generic.List[string]
 $skipped = New-Object System.Collections.Generic.List[string]
-function Add-TextFile([string]$Source, [string]$Rel) {
+function Add-TextFile([string]$Source, [string]$Rel, [long]$TailBytes = 0) {
     if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) { return }
     try {
         $dest = Join-Path $stage $Rel
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
-        [IO.File]::WriteAllText($dest, (Protect-Text (Read-Shared $Source)), (New-Object Text.UTF8Encoding($false)))
+        [IO.File]::WriteAllText($dest, (Protect-Text (Read-Shared $Source $TailBytes)), (New-Object Text.UTF8Encoding($false)))
         $included.Add($Rel)
     } catch { $skipped.Add("$Rel ($($_.Exception.Message))") }   # e.g. locked by another program
 }
@@ -162,11 +199,223 @@ function Write-Failure([string]$Reason) {
     try { New-Item -ItemType Directory -Force -Path $dir | Out-Null } catch { $dir = $env:TEMP }
     $file = Join-Path $dir 'Goobies_crash_report_FAILED.txt'
     [IO.File]::WriteAllText($file, $text)
+    Write-Output ''
+    Write-Output "Details saved to: $file"
     if (-not $NoExplorer) { Start-Process notepad.exe -ArgumentList "`"$file`"" }
 }
 
-if (-not $OutDir) { $OutDir = [Environment]::GetFolderPath('Desktop') }
+# ---- optional Discord upload ---------------------------------------------------------------------
+# The webhook address is a secret (anyone holding it can post): it is never printed, logged or zipped.
+# State: none (no file), invalid (file holds something else), ok (Url is a Discord webhook).
+function Read-Webhook {
+    $file = if ($WebhookFile) { $WebhookFile } else { Join-Path $PSScriptRoot 'report_webhook.txt' }
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return [pscustomobject]@{ State = 'none'; Url = $null } }
+    $line = $null
+    try {
+        $line = @((Read-Shared $file) -split "`r?`n" | ForEach-Object { $_.Trim() } |
+                  Where-Object { $_ -and -not $_.StartsWith('#') }) | Select-Object -First 1
+    } catch { }
+    # ECMAScript: \d and \w are ASCII only.
+    if ($line -and [regex]::IsMatch($line, $WebhookPattern, 'IgnoreCase, ECMAScript')) { return [pscustomobject]@{ State = 'ok'; Url = $line } }
+    return [pscustomobject]@{ State = 'invalid'; Url = $null }
+}
+
+function Hide-Webhook([string]$Text, [string]$Url) {
+    if ($Url) {
+        $parts = $Url.Split('/')
+        foreach ($s in @($Url) + @($parts[-1], $parts[-2])) { if ($s) { $Text = $Text.Replace($s, '<webhook>') } }
+    }
+    return Protect-Text $Text
+}
+
+# One multipart POST (payload_json + files[0]). Returns Ok/Status/Body; throws on network errors.
+# GOOBIES_REPORT_UPLOAD_MOCK (tests only) replaces the network send: ok | fail | textchannel;
+# the request body is written to GOOBIES_REPORT_UPLOAD_MOCK_OUT.
+function Send-Webhook([string]$Url, [string]$ZipFile, [string]$Message, [string]$ThreadName) {
+    Add-Type -AssemblyName System.Net.Http
+    $payload = [ordered]@{ content = $Message }
+    if ($ThreadName) { $payload.thread_name = $ThreadName }   # a forum channel needs a post title
+    $payload.allowed_mentions = @{ parse = @() }               # never ping anyone
+    $form = New-Object System.Net.Http.MultipartFormDataContent
+    try {
+        $jsonPart = New-Object System.Net.Http.StringContent((ConvertTo-Json $payload -Compress -Depth 4), [Text.Encoding]::UTF8, 'application/json')
+        $cd = New-Object System.Net.Http.Headers.ContentDispositionHeaderValue('form-data'); $cd.Name = '"payload_json"'
+        $jsonPart.Headers.ContentDisposition = $cd
+        $form.Add($jsonPart)
+        $filePart = New-Object System.Net.Http.ByteArrayContent(, [IO.File]::ReadAllBytes($ZipFile))
+        $filePart.Headers.ContentType = New-Object System.Net.Http.Headers.MediaTypeHeaderValue('application/zip')
+        $cd = New-Object System.Net.Http.Headers.ContentDispositionHeaderValue('form-data')
+        $cd.Name = '"files[0]"'; $cd.FileName = '"' + [IO.Path]::GetFileName($ZipFile) + '"'
+        $filePart.Headers.ContentDisposition = $cd
+        $form.Add($filePart)
+        $mock = $env:GOOBIES_REPORT_UPLOAD_MOCK
+        if ($mock) {
+            if ($env:GOOBIES_REPORT_UPLOAD_MOCK_OUT) {
+                [IO.File]::WriteAllBytes($env:GOOBIES_REPORT_UPLOAD_MOCK_OUT, $form.ReadAsByteArrayAsync().GetAwaiter().GetResult())
+            }
+            if ($mock -eq 'ok' -or ($mock -eq 'textchannel' -and -not $ThreadName)) { return [pscustomobject]@{ Ok = $true; Status = 204; Body = '' } }
+            if ($mock -eq 'textchannel') {
+                return [pscustomobject]@{ Ok = $false; Status = 400; Body = '{"message": "Webhooks can only create threads in forum channels", "code": 220003}' }
+            }
+            throw "mock network failure while posting to $Url"
+        }
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $client = New-Object System.Net.Http.HttpClient
+        $client.Timeout = [TimeSpan]::FromSeconds(60)
+        try {
+            $resp = $client.PostAsync($Url, $form).GetAwaiter().GetResult()
+            $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            return [pscustomobject]@{ Ok = $resp.IsSuccessStatusCode; Status = [int]$resp.StatusCode; Body = [string]$body }
+        } catch {
+            $base = $_.Exception.GetBaseException()
+            if ($base -is [Threading.Tasks.TaskCanceledException]) { throw 'Discord did not answer within 60 seconds.' }
+            throw $base.Message
+        } finally { $client.Dispose() }
+    } finally { $form.Dispose() }
+}
+
+# Step log of the newest run (no window, so this is how a silent run is diagnosed): one sanitized line per step in
+# %LOCALAPPDATA%\Goobies_report\last_run.txt (GOOBIES_REPORT_RUNLOG overrides; tests only). Never throws.
+function Write-RunLog([string]$Line, [switch]$New) {
+    try {
+        $file = if ($env:GOOBIES_REPORT_RUNLOG) { $env:GOOBIES_REPORT_RUNLOG } else { Join-Path $env:LOCALAPPDATA 'Goobies_report\last_run.txt' }
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $file) | Out-Null
+        $text = '{0} {1}{2}' -f (Get-Date).ToString('HH:mm:ss.fff'), (Protect-Text $Line), "`r`n"
+        if ($New) { [IO.File]::WriteAllText($file, $text) } else { [IO.File]::AppendAllText($file, $text) }
+    } catch { }
+}
+
+# -Gui popups: -Ask shows Yes/No (default No) and returns $true for Yes; otherwise an information notice
+# that closes after -Seconds (0 = waits for OK). GOOBIES_REPORT_GUI_MOCK (tests only) answers instead of
+# showing a window (yes|no) and appends each popup's text to GOOBIES_REPORT_GUI_MOCK_OUT.
+function Show-Popup([string]$Text, [switch]$Ask, [int]$Seconds = 0) {
+    if ($env:GOOBIES_REPORT_GUI_MOCK) {
+        if ($env:GOOBIES_REPORT_GUI_MOCK_OUT) { [IO.File]::AppendAllText($env:GOOBIES_REPORT_GUI_MOCK_OUT, "$Text`n----`n") }
+        return ($Ask -and $env:GOOBIES_REPORT_GUI_MOCK -eq 'yes')
+    }
+    $title = 'Goobies - Report a problem'
+    try {
+        if ($Ask) {
+            Add-Type -AssemblyName System.Windows.Forms
+            # DefaultDesktopOnly keeps the popup in front: this script has no window of its own.
+            return ([System.Windows.Forms.MessageBox]::Show($Text, $title, 'YesNo', 'Question', 'Button2', 'DefaultDesktopOnly') -eq 'Yes')
+        }
+        # 0x40 information icon, 0x40000 always on top.
+        [void](New-Object -ComObject WScript.Shell).Popup($Text, $Seconds, $title, 0x40040)
+    } catch { Write-RunLog "popup error: $($_.Exception.Message)" }
+    return $false
+}
+
+# 'in your Downloads folder' or 'in <folder>' for where the zip ends up (a staged zip: where it is moved if kept).
+function Get-ZipWhere {
+    $zipDir = if ($uploadStage) { $OutDir } else { Split-Path -Parent $zipPath }
+    $downloads = Get-DownloadsFolder
+    if ($downloads -and $zipDir.TrimEnd('\') -ieq $downloads.TrimEnd('\')) { return 'in your Downloads folder' }
+    return "in $zipDir"
+}
+
+# The Downloads known folder (it may be moved to another drive); $null when Windows cannot say.
+function Get-DownloadsFolder {
+    try {
+        $p = (New-Object -ComObject Shell.Application).NameSpace('shell:Downloads').Self.Path
+        if ($p -and (Test-Path -LiteralPath $p -PathType Container)) { return $p }
+    } catch { }
+    $p = Join-Path $env:USERPROFILE 'Downloads'
+    if (Test-Path -LiteralPath $p -PathType Container) { return $p }
+    return $null
+}
+
+# Asks first (default No); sends the zip, or a copy without the dump when it is over the limit.
+# Returns $true only when Discord accepted the report.
+function Send-Report([string]$Url) {
+    $answer = $null
+    if ($Gui) {
+        $q = "A problem report was made (game logs, mod settings and the newest crash dump; your name and IDs are removed).`n`nSend it to the Goobies MP developers?"
+        Write-RunLog 'asked (popup)'
+        if (Show-Popup $q -Ask) { $answer = 'y' }
+    } else {
+        Write-Output ''
+        Write-RunLog 'asked (console)'
+        Write-Host -NoNewline 'Send this report to the Goobies MP developers? (Y/N) '
+        try { $answer = [Console]::In.ReadLine() } catch { }
+        Write-Output ''
+    }
+    $yes = $answer -match '^\s*y(es)?\s*$'
+    Write-RunLog ('answer=' + $(if ($yes) { 'yes' } else { 'no' }))
+    if (-not $yes) { Write-Output 'Not sent.'; return }
+    $script:tried = $true
+
+    $file = $zipPath; $tmpDir = $null
+    $dumpState = if ($dumpEntry) { 'included' } else { 'not included' }
+    $dumpNoteText = $null
+    try {
+        $size = (Get-Item -LiteralPath $file).Length
+        if ($size -gt $UploadLimitBytes -and $dumpEntry) {
+            $tmpDir = Join-Path $env:TEMP "Goobies_report_upload_$PID"
+            New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+            $file = Join-Path $tmpDir (Split-Path -Leaf $zipPath)
+            $src = [IO.Compression.ZipFile]::OpenRead($zipPath)
+            $dst = [IO.Compression.ZipFile]::Open($file, 'Create')
+            try {
+                foreach ($e in $src.Entries) {
+                    if ($e.FullName -eq $dumpEntry) { continue }
+                    $in = $e.Open(); $out = $dst.CreateEntry($e.FullName).Open()
+                    try { $in.CopyTo($out) } finally { $out.Dispose(); $in.Dispose() }
+                }
+            } finally { $dst.Dispose(); $src.Dispose() }
+            $dumpNoteText = "The crash dump was too large for Discord and was left out; the full zip is $(Get-ZipWhere)."
+            $script:keepFull = $true
+            Write-Output $dumpNoteText
+            $dumpState = 'left out (too large for Discord)'
+            $size = (Get-Item -LiteralPath $file).Length
+        }
+        if ($size -gt $UploadLimitBytes) {
+            Write-Output ('Not sent: the report is too big for Discord ({0:N1} MB).' -f ($size / 1MB))
+            return
+        }
+        $now = Get-Date
+        $versions = @($modVersions | Where-Object { $_ -like 'GoobiesMP *' } | ForEach-Object { 'Goobies MP' + $_.Substring(9) }) +
+                    @($modVersions | Where-Object { $_ -notlike 'GoobiesMP *' })
+        $mods = if ($versions.Count) { $versions -join ', ' } else { 'none found' }
+        $message = Protect-Text (@("Goobies crash report (CollectCrashReport $Version)",
+            "Report time: $($now.ToString('yyyy-MM-dd HH:mm:ss zzz'))", "Mods: $mods", "Crash dump: $dumpState") + @($dumpNoteText | Where-Object { $_ }) -join "`n")
+        if ($message.Length -gt 1900) { $message = $message.Substring(0, 1900) }
+        $thread = Protect-Text ("Crash report $($now.ToString('yyyy-MM-dd HH:mm')) - $mods")
+        if ($thread.Length -gt 100) { $thread = $thread.Substring(0, 97) + '...' }
+
+        Write-Output 'Sending...'
+        $r = Send-Webhook $Url $file $message $thread
+        # A text channel (not a forum) may refuse a post title; send once more without it.
+        if (-not $r.Ok -and $r.Status -eq 400 -and $r.Body -match '220003|thread_name|forum') { $r = Send-Webhook $Url $file $message '' }
+        if (-not $r.Ok) {
+            $detail = if ($r.Body.Length -gt 200) { $r.Body.Substring(0, 200) } else { $r.Body }
+            throw "Discord answered $($r.Status). $detail"
+        }
+        Write-RunLog "sent status=$($r.Status)"
+        Write-Output 'Sent. Thank you - the Goobies MP developers have your report.'
+        $script:sent = $true
+    } catch {
+        Write-RunLog "send failed: $(Hide-Webhook $_.Exception.Message $Url)"
+        Write-Output "Could not send the report: $(Hide-Webhook $_.Exception.Message $Url)"
+    } finally {
+        if ($tmpDir) { Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Write-RunLog "start version=$Version gui=$Gui pid=$PID" -New
+if (-not $OutDir) { $OutDir = Get-DownloadsFolder }
 if (-not $OutDir) { $OutDir = $env:USERPROFILE }
+$uploadStage = $null; $keepFull = $false
+# Upload staging folders left by an interrupted run (older than a day) are removed; only this script's own prefix.
+Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter 'Goobies_report_*' -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-1) } |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+# Start-Process opens whatever it is given, so only a web address is accepted for the issue page.
+if ($IssueUrl -notmatch '^https://[^\s"]+$') {
+    Write-Output 'Note: -IssueUrl must start with https:// - using the default GitHub page.'
+    $IssueUrl = $DefaultIssueUrl
+}
+$dumpEntry = $null
 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $stage = Join-Path $env:TEMP "Goobies_crash_report_$stamp`_$PID"
 $zipPath = $null; $zipDone = $false
@@ -177,8 +426,10 @@ try {
         if (-not $found) { throw "Goobies was not found at '$GameDir' (expected a Shooter\Binaries\Win64 folder in it or in a Goobies_DX11 / Goobies_Vulkan folder inside it)." }
         $GameDir = $found
     } else {
-        $GameDir = Find-SteamGame
-        if (-not $GameDir) { $GameDir = Find-ParentGame }
+        # A copy of this script inside a game folder (it ships in Win64\Mods\mod_menu) reports that copy;
+        # otherwise the Steam install.
+        $GameDir = Find-ParentGame
+        if (-not $GameDir) { $GameDir = Find-SteamGame }
         if (-not $GameDir) { throw 'The Goobies install was not found automatically (checked your Steam libraries and the folders around this script).' }
     }
     $GameDir = (Resolve-Path -LiteralPath $GameDir).Path.TrimEnd('\')
@@ -199,11 +450,32 @@ try {
         foreach ($d in Get-ChildItem -LiteralPath $mods -Directory | Sort-Object Name) {
             $state = if (Test-Path -LiteralPath (Join-Path $d.FullName 'enabled.txt')) { 'enabled.txt' } else { '-' }
             $folderLines += ('{0,-32} {1}' -f $d.Name, $state)
-            Add-TextFile (Join-Path $d.FullName 'mod_menu.ini') "mods\$($d.Name)\mod_menu.ini"
+            $ini = Join-Path $d.FullName 'mod_menu.ini'
+            Add-TextFile $ini "mods\$($d.Name)\mod_menu.ini"
+            try {
+                $v = [regex]::Match((Read-Shared $ini), '(?im)^\s*Version\s*=\s*([^\r\n;#]{1,40})')
+                if ($v.Success) { $modVersions.Add(('{0} {1}' -f $d.Name, $v.Groups[1].Value.Trim())) }
+            } catch { }   # no or unreadable mod_menu.ini: no version to report
         }
     }
     [IO.File]::WriteAllText((Join-Path $stage 'mod_folders.txt'), (Protect-Text ($folderLines -join "`r`n")))
     $included.Add('mod_folders.txt')
+
+    # ---- 2b. Goobies MP: role logs (appended across launches, so only the tail), settings, the
+    #          authority manifest (never the DLL) and the newest achievement-guard log --------------
+    $mpDir = Join-Path $mods 'GoobiesMP'
+    if (Test-Path -LiteralPath $mpDir -PathType Container) {
+        Get-ChildItem -LiteralPath $mpDir -File | Where-Object { $_.Name -match '^gmp(_[^\\/]*)?\.log$' } | Sort-Object Name |
+            ForEach-Object { Add-TextFile $_.FullName "mods\GoobiesMP\$($_.Name)" $MaxLogBytes }
+    }
+    Add-TextFile (Join-Path $win64 'Configs\GoobiesMP.ini') 'GoobiesMP.ini'
+    Add-TextFile (Join-Path $mods 'GoobiesMPAuthority\manifest.json') 'mods\GoobiesMPAuthority\manifest.json'
+    $guardDir = Join-Path $GameDir 'Shooter\Plugins\SteamCorePro\SteamCorePro\Source\ThirdParty\SteamLibrary\redistributable_bin\win64'
+    if (Test-Path -LiteralPath $guardDir -PathType Container) {
+        $guard = Get-ChildItem -LiteralPath $guardDir -File -Filter 'mod_menu_guard_*.log' |
+                 Where-Object { $_.Name -match '^mod_menu_guard_\d+_\d+\.log$' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($guard) { Add-TextFile $guard.FullName "guard\$($guard.Name)" $MaxLogBytes }
+    }
 
     # ---- 3. newest crash folder and newest dump ----------------------------------------------
     $crash = $null
@@ -229,6 +501,7 @@ try {
             $crashDir = New-Item -ItemType Directory -Force -Path (Join-Path $stage 'crash')
             Copy-Item -LiteralPath $dump.FullName -Destination $crashDir.FullName -Force
             $included.Add("crash\$($dump.Name)")
+            $dumpEntry = "crash/$($dump.Name)"
             $dumpNote = "Dump $($dump.Name) included (binary, not sanitized; rerun with -NoDump to omit)."
         } catch {   # e.g. still locked by the crashing game or the crash reporter
             $skipped.Add("crash\$($dump.Name) ($($_.Exception.Message))")
@@ -267,7 +540,8 @@ try {
         "Windows: $([Environment]::OSVersion.VersionString)",
         "Game folder: $GameDir",
         "Game executables: $(if ($exes) { $exes -join ', ' } else { 'none found' })",
-        "Newest crash folder: $crashTime"
+        "Newest crash folder: $crashTime",
+        "Mod versions: $(if ($modVersions.Count) { $modVersions -join ', ' } else { 'none found' })"
     ) + @($warnings | ForEach-Object { "WARNING: $_" }) + @($dumpNote, 'Included files:') + $fileLines +
         @($skipped | ForEach-Object { "Skipped (could not read): $_" })
     [IO.File]::WriteAllText((Join-Path $stage 'summary.txt'), (Protect-Text ($summary -join "`r`n")))
@@ -275,7 +549,17 @@ try {
     # ---- 5. zip with forward-slash entry names (portable across unzip tools) --------------------
     Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-    $zipPath = Join-Path (Resolve-Path -LiteralPath $OutDir).Path "Goobies_crash_report_$stamp.zip"
+    $OutDir = (Resolve-Path -LiteralPath $OutDir).Path
+    # With a usable webhook the zip is built in %TEMP%: deleted once sent, moved to $OutDir if kept.
+    $hook = Read-Webhook
+    Write-RunLog "webhook=$($hook.State)"
+    $zipDir = $OutDir
+    if ($hook.State -eq 'ok') {
+        $uploadStage = Join-Path $env:TEMP "Goobies_report_$PID"
+        New-Item -ItemType Directory -Force -Path $uploadStage | Out-Null
+        $zipDir = $uploadStage
+    }
+    $zipPath = Join-Path $zipDir "Goobies_crash_report_$stamp.zip"
     $zip = [IO.Compression.ZipFile]::Open($zipPath, 'Create')
     try {
         foreach ($f in Get-ChildItem -LiteralPath $stage -Recurse -File) {
@@ -286,6 +570,8 @@ try {
     $zipDone = $true
 } catch {
     if ($zipPath -and -not $zipDone -and (Test-Path -LiteralPath $zipPath -PathType Leaf)) { Remove-Item -LiteralPath $zipPath -Force }
+    if ($uploadStage) { Remove-Item -LiteralPath $uploadStage -Recurse -Force -ErrorAction SilentlyContinue }
+    Write-RunLog "failed: $($_.Exception.Message)"
     Write-Failure $_.Exception.Message
     exit 1
 } finally {
@@ -294,6 +580,61 @@ try {
 
 Remove-Item -LiteralPath (Join-Path $OutDir 'Goobies_crash_report_FAILED.txt') -Force -ErrorAction SilentlyContinue
 Write-Output "Crash report written to: $zipPath"
-Write-Output 'Attach it to a new "Crash report" issue on GitHub (drag the zip into the issue form).'
-if (-not $NoExplorer) { Start-Process explorer.exe -ArgumentList "/select,`"$zipPath`"" }
+
+# ---- 6. optional upload (only with a webhook file and a Y answer), else the GitHub page ----------
+$script:sent = $false
+$script:tried = $false
+if ($hook.State -eq 'invalid') {
+    Write-Output 'Note: the address in the webhook file is not a Discord webhook address, so nothing is sent.'
+} elseif ($hook.State -eq 'ok') {
+    Send-Report $hook.Url
+}
+$hookState = $hook.State
+$hook = $null
+
+# A staged zip is deleted once Discord has all of it; otherwise it is moved to $OutDir.
+$removed = $false
+if ($uploadStage) {
+    try {
+        if ($sent -and -not $keepFull) {
+            Remove-Item -LiteralPath $zipPath -Force; $removed = $true
+        } else {
+            $dest = Join-Path $OutDir (Split-Path -Leaf $zipPath)
+            Move-Item -LiteralPath $zipPath -Destination $dest -Force; $zipPath = $dest
+        }
+    } catch { Write-Output "Note: could not tidy up the report file: $($_.Exception.Message)" }
+    Remove-Item -LiteralPath $uploadStage -Recurse -Force -ErrorAction SilentlyContinue
+    $uploadStage = $null
+}
+
+$zipName = Split-Path -Leaf $zipPath
+Write-RunLog "end sent=$sent removed=$removed zip=$(if ($removed) { '-' } else { $zipPath })"
+$where = Get-ZipWhere
+Write-Output ''
+if ($sent) {
+    if ($removed) {
+        Write-Output 'The report file was removed from this PC (the developers have it).'
+        if ($Gui) { Show-Popup "Report sent. Thank you!`n`nThis message closes by itself." -Seconds 5 | Out-Null }
+    } else {
+        Write-Output "The full report (with the crash dump) is $where`: $zipName"
+        if ($Gui) { Show-Popup "Report sent. Thank you!`n`nThe crash dump was too big to send; the full report is $where`. This message closes by itself." -Seconds 5 | Out-Null }
+    }
+} else {
+    Write-Output "Issue page: $IssueUrl"
+    # -Gui never opens a folder; the issue page opens only when there is no other way to send (no webhook file).
+    $openPage = -not $NoExplorer -and -not ($Gui -and $hookState -eq 'ok')
+    if (-not $NoExplorer -and -not $Gui) { Start-Process explorer.exe -ArgumentList "/select,`"$zipPath`"" }
+    if ($openPage) {
+        try { Start-Process $IssueUrl } catch { Write-Output 'Could not open the browser; open the issue page above yourself.' }
+        Write-Output "Your report is $where`: $zipName. Drag it into the page that just opened."
+    } else {
+        Write-Output "Your report is $where`: $zipName. Drag it into a new issue on the page above."
+    }
+    if ($Gui) {
+        $text = if ($tried) { "The report could not be sent automatically.`n`nIt was saved $where`:`n$zipName" }
+                elseif ($hookState -eq 'ok') { "Not sent.`n`nThe report was saved $where`:`n$zipName" }
+                else { "The report was saved $where`:`n$zipName`n`nThe page that just opened shows how to send it." }
+        Show-Popup $text -Seconds 20 | Out-Null
+    }
+}
 exit 0

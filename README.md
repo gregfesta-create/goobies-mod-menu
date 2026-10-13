@@ -21,11 +21,16 @@ See `Mods/mod_menu/PROVIDER_API.md` and the example in `examples/`.
 
 ## Reporting a crash
 
-1. Download [`CollectCrashReport.ps1`](https://raw.githubusercontent.com/gregfesta-create/goobies-mod-menu/main/Tools/CollectCrashReport.ps1) (right-click the link > **Save link as**; source: [Tools/CollectCrashReport.ps1](https://github.com/gregfesta-create/goobies-mod-menu/blob/main/Tools/CollectCrashReport.ps1)).
-2. Right-click the saved file > **Run with PowerShell**. It finds the game through Steam, picking the DX11 or Vulkan copy you played last, and puts `Goobies_crash_report_<date>.zip` on your Desktop. If Windows blocks it: right-click > Properties > **Unblock** (or run `Unblock-File` on it).
-3. Open a [Crash report issue](https://github.com/gregfesta-create/goobies-mod-menu/issues/new?template=crash_report.yml), fill in the form and drag the zip into it.
+**Double-click `Report a problem.bat` in your Mod Menu folder.** Every Goobies mod needs Mod Menu, so the report tool comes with it: it is in your Goobies folder under `Shooter\Binaries\Win64\Mods\mod_menu\` (in Steam: right-click Goobies > **Manage** > **Browse local files**; if you see `Goobies_DX11` or `Goobies_Vulkan`, open the one you play).
 
-From a console (in the download folder): `powershell -NoProfile -ExecutionPolicy Bypass -File .\CollectCrashReport.ps1 -GameDir "<Goobies folder>" [-NoDump]`. If it fails, it leaves `Goobies_crash_report_FAILED.txt` on the Desktop with the reason and the retry steps.
+1. Double-click `Report a problem.bat`. It works without a window, so give it a few seconds. It reports on the game copy it sits in, saves `Goobies_crash_report_<date>.zip` in your **Downloads** folder, opens the crash-report page in your browser and tells you in a small popup where the zip is. If Windows warns about the file, choose **More info > Run anyway**.
+2. Fill in the [Crash report issue](https://github.com/gregfesta-create/goobies-mod-menu/issues/new?template=crash_report.yml) form on that page and drag the zip into it.
+
+Older Mod Menu without the tool? Download [`Report a problem.bat`](https://raw.githubusercontent.com/gregfesta-create/goobies-mod-menu/main/Tools/Report%20a%20problem.bat) and [`CollectCrashReport.ps1`](https://raw.githubusercontent.com/gregfesta-create/goobies-mod-menu/main/Tools/CollectCrashReport.ps1) into the **same folder** (right-click each link > **Save link as**). From outside the game folder it finds the game through Steam (the DX11 or Vulkan copy you played last).
+
+Nothing is uploaded automatically. Only developer test builds that include a private `report_webhook.txt` next to the .bat can send the report straight to the developers: a popup asks first, and only **Yes** sends it. A sent report is deleted from your PC afterwards; a report that is not sent stays in your Downloads folder.
+
+From a console: `powershell -NoProfile -ExecutionPolicy Bypass -File .\CollectCrashReport.ps1 -GameDir "<Goobies folder>" [-NoDump]`. If it fails, it leaves `Goobies_crash_report_FAILED.txt` in your Downloads folder with the reason and the retry steps, and opens it.
 
 Included: UE4SS logs, `UE4SS-settings.ini`, `Configs/ModList.ini`, `Mods/mods.txt`, each mod's `mod_menu.ini`, the list of mod folders, the newest crash's `CrashContext.runtime-xml` and `CrashReportClient.ini`, a `summary.txt`, and the newest crash dump (`.dmp`) if it is 20 MB or less.
 
@@ -33,4 +38,4 @@ Removed from text files: your user name and profile folder, computer name, Steam
 
 **The `.dmp` file cannot be cleaned:** it is a snapshot of the game's memory and may contain personal information. To leave it out, run the script with `-NoDump`.
 
-If the script cannot run, zip these by hand (open them first and remove anything personal): `Shooter/Binaries/Win64/UE4SS.log`, `Shooter/Binaries/Win64/Mods/mods.txt`, `Shooter/Binaries/Win64/Configs/ModList.ini`, and the newest folder in `%LOCALAPPDATA%\Shooter\Saved\Crashes\`.
+If the tool cannot run, zip these by hand (open them first and remove anything personal): `Shooter/Binaries/Win64/UE4SS.log`, `Shooter/Binaries/Win64/Mods/mods.txt`, `Shooter/Binaries/Win64/Configs/ModList.ini`, and the newest folder in `%LOCALAPPDATA%\Shooter\Saved\Crashes\`.
