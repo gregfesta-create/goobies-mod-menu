@@ -1,8 +1,17 @@
 # Mod Menu changelog
 
+## 1.1.0-test.2 — 2026-10-14
+
+Test build (the `-test` in the version marks it). Needed by Goobies Multiplayer 1.0.0-test.3 and later.
+
+- Mod Menu blocks Steam achievements by itself: `Mods\ModMenuGuard` (a hidden helper) stops achievement unlocks, stat
+  changes and leaderboard score uploads from inside `Win64`, in single player too. Nothing to move or rename any more.
+- If the block cannot be confirmed, the main menu says "Achievement protection not confirmed - achievements may
+  unlock" (shorter, and it wraps in small windows); play stays allowed.
+
 ## 1.1.0-test.1 — 2026-10-14
 
-Test build (GitHub pre-release). Needed by Goobies Multiplayer 1.0.0-test.2 and later.
+Test build (the `-test` in the version marks it). Needed by Goobies Multiplayer 1.0.0-test.2 and later.
 
 - `Report a problem.bat` ships in `Mods\mod_menu`: one double-click collects the logs into a zip (personal
   information removed) and opens the crash-report page. Mod Menu also notices a new crash of this game copy at start.

@@ -1,7 +1,7 @@
 # Mod Menu for Goobies
 
 The mod manager every Goobies mod uses: it lists your mods, turns them on and off, holds their settings and brings the
-UE4SS mod loader. **Version 1.1.0-test.1 is a test build** (pre-release).
+UE4SS mod loader. **Version 1.1.0-test.2 is a test build.**
 
 ## Requirements
 
@@ -13,8 +13,14 @@ UE4SS mod loader. **Version 1.1.0-test.1 is a test build** (pre-release).
    (the folder with `Shooter-Win64-Shipping.exe`); below this is called `Win64`.
 2. If you already use other UE4SS mods, back up `UE4SS.dll`, `dwmapi.dll` and `UE4SS-settings.ini` in `Win64`.
 3. If Windows marks the zip as blocked: right-click it, *Properties*, tick **Unblock**.
-4. Put `goobies_mod_menu_1.1.0-test.1.zip` into `Win64` and extract it there (*right-click > Extract All*, target `Win64` itself).
+4. Put `goobies_mod_menu_1.1.0-test.2.zip` into `Win64` and extract it there (*right-click > Extract All*, target `Win64` itself).
 5. Start Goobies through Steam. *Mods* is in the main menu.
+
+## Achievements
+
+Mod Menu blocks Steam achievements (`Win64\Mods\ModMenuGuard`, a hidden helper): while it is installed no achievement
+unlocks and no stat or leaderboard score is sent, in single player too. If the main menu shows "Achievement protection not
+confirmed - achievements may unlock", the block did not start: please report it.
 
 ## Mods that use Mod Menu
 
@@ -23,7 +29,6 @@ UE4SS mod loader. **Version 1.1.0-test.1 is a test build** (pre-release).
 
 ## Known limits
 
-- The achievement guard is not in this build yet: the main menu shows a notice that achievements are not blocked, and play stays allowed. Built-in blocking is coming in a later Mod Menu update.
 - The bundled UE4SS loader is an experimental build (v3.0.1-1164); it replaces an older UE4SS in the same folder.
 
 ## Reporting a problem
@@ -39,8 +44,8 @@ Every Goobies mod needs Mod Menu, so the report tool comes with it. It is in you
 
 ## Uninstall
 
-Delete `Win64\Mods\mod_menu`, `UE4SS.dll`, `dwmapi.dll` and `UE4SS-settings.ini` (the mods that need Mod Menu stop
-working). Your save is not changed.
+Delete `Win64\Mods\mod_menu`, `Win64\Mods\ModMenuGuard`, `UE4SS.dll`, `dwmapi.dll` and `UE4SS-settings.ini` (the mods
+that need Mod Menu stop working). Your save is not changed.
 
 ## License
 
