@@ -46,6 +46,7 @@ end
 function UI:attach(menu)
     self.stage='attach: widget helpers'
     self.menu=menu; self.dispatch={}; self.queue={}
+    self.mainMenuLayoutRefused=nil
     self.w=Widgets.new(self.G,menu,self.paths.mod .. '/Assets',self.dispatch)
     self.stage='attach: main-menu Play parent'
     local column=menu.Play:GetParent(); local upgrades=menu.upgrades
@@ -107,6 +108,20 @@ function UI:attach(menu)
     self.entry=entry; self.entryBox=entryBox; self.entryName=entry:GetFullName()
     self.entryStylePending=true
     self.dispatch[self.entryName]=function() self:open() end
+    -- D57: when the achievement guard cannot be confirmed the main menu says so; play stays allowed (warn and allow)
+    local notice=self.guardNotice
+    if type(notice)=='function' then notice=notice() end
+    if notice then
+        self.stage='attach: achievement notice'
+        local shown,why=pcall(function()
+            -- Anchored to the canvas width so it wraps instead of running off the right edge in small windows
+            -- (cut at 750 px wide before); the game-styled label inherits Menu_Options' text style like every label.
+            self.guardLabel=self.w:banner(menu.WidgetTree.RootWidget,notice,60,100,60,18)
+        end)
+        if not shown then self.log('Achievement notice unavailable: '..tostring(why))
+        elseif self.w.bannerFallback then self.log('Achievement notice anchored placement unavailable (fixed placement used): '..self.w.bannerFallback)
+        else self.log('Achievement notice attached (anchored, wrapping)') end
+    end
 end
 function UI:matchEntryLabel()
     if not self.entryStylePending or self.overlay then return end
@@ -360,7 +375,9 @@ function UI:renderList()
 end
 function UI:sortedMods()
     local view={}
-    for _,p in ipairs(self.core.mods) do view[#view+1]=p end
+    for _,p in ipairs(self.core.mods) do
+        if not p.internalService then view[#view+1]=p end
+    end
     local mode=self.sortMode or 'Alphabetical'
     if mode=='Unsorted' then
         local rank,section,nextRank={},'',0
@@ -736,10 +753,29 @@ function UI:palette(control)
     end
     self.w:button(d,'Close',800,580,160,48,function() self:closeDialog() end); self:sealDialog()
 end
+function UI:cleanupGameMenuStyles()
+    for id,item in pairs(self.gameMenuStyles or {}) do self.gameMenuStyles[id]=nil;pcall(item.cleanup) end
+end
+function UI:tickGameMenuStyles()
+    for id,item in pairs(self.gameMenuStyles or {}) do
+        local ok,err=pcall(item.tick)
+        if not ok then
+            self.gameMenuStyles[id]=nil;pcall(item.cleanup)
+            pcall(self.log,id..': game menu style failed: '..tostring(err))
+        end
+    end
+end
 function UI:tick()
+    -- Esc styling must keep ticking while the main-menu widget is absent.
+    self:tickGameMenuStyles()
     self.stage='tick: current menu validity'
     if not valid(self.menu) or not self.menu:IsInViewport() then
         if self.menu then
+            if self.mainMenuLayout then
+                local restored,err=pcall(self.mainMenuLayout.Restore,self.mainMenuLayout)
+                if not restored then pcall(self.log,'Main-menu layout restoration pending: '..tostring(err));return end
+                self.mainMenuLayout=nil
+            end
             self:close()
             if valid(self.entryBox) then self.entryBox:RemoveFromParent() end
             self.entry=nil; self.entryBox=nil; self.entryName=nil; self.menu=nil; self.lastTime=nil
@@ -757,6 +793,41 @@ function UI:tick()
         if not ok then
             self.menuStyles[id]=nil
             self.log(id..': main menu style failed: '..tostring(err))
+        end
+    end
+    -- Layout follows optional style providers so slot spacing has one owner.
+    -- Mod Menu alone moves nothing: without a style hook the natives stay vanilla,
+    -- and losing the last hook restores them (a later hook binds afresh).
+    local hooked=next(self.menuStyles or {})~=nil
+    if not hooked then
+        if self.mainMenuLayout then
+            local restored,err=pcall(self.mainMenuLayout.Restore,self.mainMenuLayout)
+            if restored then self.mainMenuLayout=nil;self.mainMenuLayoutStamp=nil
+            else pcall(self.log,'Main-menu layout restoration pending: '..tostring(err)) end
+        end
+    -- Missing native hierarchy fails before moving controls; retry on a new menu.
+    elseif not self.mainMenuLayout and not self.mainMenuLayoutRefused then
+        local ok,layout,why,retained=pcall(require('mm_main_menu_layout').Bind,self.G,self.w,self.menu)
+        if ok and layout then self.mainMenuLayout=layout
+        elseif ok and retained then self.mainMenuLayout=retained
+        else
+            local reason=tostring(ok and why or layout)
+            if not reason:find('Awaiting native',1,true)then self.mainMenuLayoutRefused=true;pcall(self.log,'Shared main-menu layout unavailable: '..reason)end
+        end
+    end
+    if hooked and self.mainMenuLayout then
+        local ok,why=pcall(self.mainMenuLayout.Tick,self.mainMenuLayout)
+        if not ok then
+            pcall(self.log,'Shared main-menu layout failed: '..tostring(why))
+            local restored=pcall(self.mainMenuLayout.Restore,self.mainMenuLayout)
+            if restored then self.mainMenuLayout=nil;self.mainMenuLayoutRefused=true end
+        elseif why and self.mainMenuLayout.plan then
+            local p=self.mainMenuLayout.plan
+            local stamp=p.rootWidth..':'..p.rootHeight..':'..p.scaleX..':'..p.scaleY..':'..tostring(p.scroll)
+            if stamp~=self.mainMenuLayoutStamp then
+                self.mainMenuLayoutStamp=stamp
+                pcall(self.log,'Shared menu layout: root='..p.rootWidth..'x'..p.rootHeight..'; scale='..p.scaleX..','..p.scaleY..'; physicalGap='..p.gap*p.scaleY..'; scrolling='..tostring(p.scroll)..'; footerY='..p.footerY..'; menuBottom='..(p.menuTop+p.menuHeight))
+            end
         end
     end
     -- Parent stretch anchors follow layout/resolution changes automatically.
@@ -797,7 +868,37 @@ function UI:tick()
     end
     local queue=self.queue; self.queue={}
     local back=self.backEpoch; self.backEpoch=nil
-    if back==self.epoch and valid(self.overlay) then
+    local allowModMenu=self.backAllowsModMenu;self.backAllowsModMenu=nil
+    local requested=self.backNavigation;self.backNavigation=nil
+    if back==self.epoch then
+        local ids={};for id in pairs(self.menuBackHandlers or {}) do ids[#ids+1]=id end
+        table.sort(ids,function(a,b)
+            local x,y=self.menuBackHandlers[a],self.menuBackHandlers[b]
+            local xp,yp=type(x)=='table' and x.priority or 0,type(y)=='table' and y.priority or 0
+            if xp~=yp then return xp>yp end
+            local xs,ys=type(x)=='table' and x.serial or 0,type(y)=='table' and y.serial or 0
+            if xs~=ys then return xs>ys end;return a<b
+        end)
+        for _,id in ipairs(ids) do
+            local item=self.menuBackHandlers[id]
+            local state=self.core:query(type(item)=='table' and item.owner or id)
+            if state.enabled==true and state.active==true then
+                if type(item)=='table' then
+                    local ok,visible=pcall(item.isVisible)
+                    if ok and visible==true then
+                        local pin=requested and requested[id]
+                        if not pin or pin.item~=item or pin.generation~=item.generation then return end
+                        if item.canBack then local allowed,value=pcall(item.canBack);if not allowed or value~=true then return end end
+                        pcall(item.back);return
+                    end
+                else
+                    local pin=requested and requested[id]
+                    if pin and pin.item==item then local ok,consumed=pcall(item);if ok and consumed==true then return end end
+                end
+            end
+        end
+    end
+    if back==self.epoch and allowModMenu~=false and valid(self.overlay) then
         self.log('Escape trace: game-thread back request consumed; dialog='..tostring(self.dialog~=nil))
         if self.dialog then
             if self.restart and self.restart.waiting then
@@ -894,27 +995,42 @@ function UI:hook()
     self.hooked=true
 end
 -- Optional packages request navigation; the manager owns widget restoration.
-function UI:requestBack() self.backEpoch=self.epoch end
+function UI:requestBack(allowModMenu)
+    self.backEpoch=self.epoch;self.backAllowsModMenu=allowModMenu~=false;self.backNavigation={}
+    for id,item in pairs(self.menuBackHandlers or {}) do
+        local visible=true
+        if type(item)=='table' then local ok,value=pcall(item.isVisible);visible=ok and value==true end
+        if visible then self.backNavigation[id]={item=item,generation=type(item)=='table' and item.generation or 0} end
+    end
+end
 function UI:start()
-    self.G.LoopAsync(16,function()
-        if not self.pending then
-            self.pending=true
-            self.G.ExecuteInGameThread(function()
-                local ok,err=xpcall(function() self:tick() end,function(problem)
-                    -- UE4SS may raise a non-string error. Keep its description
-                    -- and the Lua call site without invoking the error object.
-                    local described,text=pcall(tostring,problem)
-                    return debug.traceback(described and text or 'Unprintable UI error',2)
-                end); self.pending=false
-                if not ok then
-                    self.log('UI error [' .. tostring(self.stage or 'unknown stage') .. '; widget: ' .. tostring(self.w and self.w.stage or 'none') .. ']: ' .. tostring(err))
-                    pcall(function() self:close() end)
-                    -- Stop repeated construction failures; leave the normal menu usable.
-                    self.failed=true
-                end
-            end)
+    local function step()
+        local ok,err=xpcall(function() self:tick() end,function(problem)
+            local described,text=pcall(tostring,problem)
+            return debug.traceback(described and text or 'Unprintable UI error',2)
+        end)
+        if not ok then
+            self.log('UI error ['..tostring(self.stage or 'unknown stage')..'; widget: '..tostring(self.w and self.w.stage or 'none')..']: '..tostring(err))
+            pcall(function() self:close() end)
+            self:cleanupGameMenuStyles()
+            self.failed=true
         end
-        return self.failed==true
-    end)
+    end
+    if type(self.G.LoopInGameThreadWithDelay)=='function' and type(self.G.CancelDelayedAction)=='function' then
+        local handle
+        handle=self.G.LoopInGameThreadWithDelay(16,function()
+            if not self.failed then step() end
+            if self.failed then self.G.CancelDelayedAction(handle) end
+        end)
+        self.log('UI updates use game-thread timer')
+    else
+        self.G.LoopAsync(16,function()
+            if not self.pending then
+                self.pending=true
+                self.G.ExecuteInGameThread(function() step();self.pending=false end)
+            end
+            return self.failed==true
+        end)
+    end
 end
 return UI

@@ -1,41 +1,47 @@
-# Goobies Mod Menu
+# Mod Menu for Goobies
 
-A mod manager for **Goobies** (Steam, DirectX 11 build). It adds a **Mods** button to the main menu where you can turn mods on or off and change their settings. Other Goobies mods (Menu Options, Goobies Multiplayer) are built on it.
+The mod manager every Goobies mod uses: it lists your mods, turns them on and off, holds their settings and brings the
+UE4SS mod loader. **Version 1.1.0-test.1 is a test build** (pre-release).
 
-**Version:** 1.0.1 (see `Mods/mod_menu/CHANGELOG.md`).
+## Requirements
+
+- Goobies on Steam (Windows). Nothing else: the UE4SS loader is in the zip.
 
 ## Install
-1. Find your game's `Shooter/Binaries/Win64` folder: Steam → right-click Goobies → Manage → Browse local files.
-2. Copy everything in this repository into that `Win64` folder, keeping the folder structure.
-3. Start the game. A **Mods** button appears on the main menu.
 
-This package includes [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) (`UE4SS.dll`, `dwmapi.dll`, `UE4SS-settings.ini`), the Lua mod loader Mod Menu runs on. Its license is in `Mods/mod_menu/ThirdParty/UE4SS-LICENSE.txt`.
+1. Find the game folder: in Steam, right-click Goobies, *Manage > Browse local files*. Open `Shooter\Binaries\Win64`
+   (the folder with `Shooter-Win64-Shipping.exe`); below this is called `Win64`.
+2. If you already use other UE4SS mods, back up `UE4SS.dll`, `dwmapi.dll` and `UE4SS-settings.ini` in `Win64`.
+3. If Windows marks the zip as blocked: right-click it, *Properties*, tick **Unblock**.
+4. Put `goobies_mod_menu_1.1.0-test.1.zip` into `Win64` and extract it there (*right-click > Extract All*, target `Win64` itself).
+5. Start Goobies through Steam. *Mods* is in the main menu.
 
-Full details: `Mods/mod_menu/INSTALL.txt`.
+## Mods that use Mod Menu
 
-## Note about the achievement guard
-The 1.0.1 release candidate also shipped an optional native achievement guard (`native/achievement_guard_candidate.dll`), which had to be installed by hand outside `Win64`. It is **not included here**: Mod Menu works without it, and the guard is being replaced by a new version. Skip the "Achievement guard setup" section of `INSTALL.txt`.
+- Goobies Multiplayer: [goobies-mp](https://github.com/gregfesta-create/goobies-mp/releases) (requires Mod Menu; install both, in any order).
+- Menu Options: [goobies-menu-options](https://github.com/gregfesta-create/goobies-menu-options/releases).
 
-## For mod authors
-See `Mods/mod_menu/PROVIDER_API.md` and the example in `examples/`.
+## Known limits
 
-## Reporting a crash
+- The achievement guard is not in this build yet: the main menu shows a notice that achievements are not blocked, and play stays allowed. Built-in blocking is coming in a later Mod Menu update.
+- The bundled UE4SS loader is an experimental build (v3.0.1-1164); it replaces an older UE4SS in the same folder.
 
-**Double-click `Report a problem.bat` in your Mod Menu folder.** Every Goobies mod needs Mod Menu, so the report tool comes with it: it is in your Goobies folder under `Shooter\Binaries\Win64\Mods\mod_menu\` (in Steam: right-click Goobies > **Manage** > **Browse local files**; if you see `Goobies_DX11` or `Goobies_Vulkan`, open the one you play).
+## Reporting a problem
 
-1. Double-click `Report a problem.bat`. It works without a window, so give it a few seconds. It reports on the game copy it sits in, saves `Goobies_crash_report_<date>.zip` in your **Downloads** folder, opens the crash-report page in your browser and tells you in a small popup where the zip is. If Windows warns about the file, choose **More info > Run anyway**.
-2. Fill in the [Crash report issue](https://github.com/gregfesta-create/goobies-mod-menu/issues/new?template=crash_report.yml) form on that page and drag the zip into it.
+`Report a problem.bat` ships inside the Mod Menu mod folder, `Win64\Mods\mod_menu`.
 
-Older Mod Menu without the tool? Download [`Report a problem.bat`](https://raw.githubusercontent.com/gregfesta-create/goobies-mod-menu/main/Tools/Report%20a%20problem.bat) and [`CollectCrashReport.ps1`](https://raw.githubusercontent.com/gregfesta-create/goobies-mod-menu/main/Tools/CollectCrashReport.ps1) into the **same folder** (right-click each link > **Save link as**). From outside the game folder it finds the game through Steam (the DX11 or Vulkan copy you played last).
+**Easiest way: double-click `Report a problem.bat` in your Mod Menu folder.**
 
-Nothing is uploaded automatically. Only developer test builds that include a private `report_webhook.txt` next to the .bat can send the report straight to the developers: a popup asks first, and only **Yes** sends it. A sent report is deleted from your PC afterwards; a report that is not sent stays in your Downloads folder.
+Every Goobies mod needs Mod Menu, so the report tool comes with it. It is in your Goobies folder under `Shooter\Binaries\Win64\Mods\mod_menu\` (in Steam: right-click Goobies > **Manage** > **Browse local files**; if you see `Goobies_DX11` or `Goobies_Vulkan`, open the one you play).
 
-From a console: `powershell -NoProfile -ExecutionPolicy Bypass -File .\CollectCrashReport.ps1 -GameDir "<Goobies folder>" [-NoDump]`. If it fails, it leaves `Goobies_crash_report_FAILED.txt` in your Downloads folder with the reason and the retry steps, and opens it.
+1. Double-click `Report a problem.bat`. It works without a window, so give it a few seconds: it reports on the game copy it sits in, saves `Goobies_crash_report_<date>.zip` in your Downloads folder, opens the crash-report page in your browser and tells you in a small popup where the zip is. If Windows warns about the file, choose **More info > Run anyway**.
+2. Fill in the form on that page and drag the zip into it.
 
-Included: UE4SS logs, `UE4SS-settings.ini`, `Configs/ModList.ini`, `Mods/mods.txt`, each mod's `mod_menu.ini`, the list of mod folders, the newest crash's `CrashContext.runtime-xml` and `CrashReportClient.ini`, a `summary.txt`, and the newest crash dump (`.dmp`) if it is 20 MB or less.
+## Uninstall
 
-Removed from text files: your user name and profile folder, computer name, Steam and lobby IDs, IP and e-mail addresses, network host names, and the account/machine fields in the crash context. `summary.txt` warns if the newest crash looks older or newer than your last session, or came from a different Goobies copy; mention that in the issue.
+Delete `Win64\Mods\mod_menu`, `UE4SS.dll`, `dwmapi.dll` and `UE4SS-settings.ini` (the mods that need Mod Menu stop
+working). Your save is not changed.
 
-**The `.dmp` file cannot be cleaned:** it is a snapshot of the game's memory and may contain personal information. To leave it out, run the script with `-NoDump`.
+## License
 
-If the tool cannot run, zip these by hand (open them first and remove anything personal): `Shooter/Binaries/Win64/UE4SS.log`, `Shooter/Binaries/Win64/Mods/mods.txt`, `Shooter/Binaries/Win64/Configs/ModList.ini`, and the newest folder in `%LOCALAPPDATA%\Shooter\Saved\Crashes\`.
+See `LICENSE`. UE4SS is MIT-licensed (`Mods\mod_menu\ThirdParty\UE4SS-LICENSE.txt`).

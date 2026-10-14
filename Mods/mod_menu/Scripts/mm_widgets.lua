@@ -72,6 +72,26 @@ function W:text(parent,text,x,y,w,h,size,tooltip)
         autoRow=self.autoRows and self.autoRows[parent:GetFullName()]}
     return self:place(parent,t,x,y,w,h)
 end
+-- D57 (achievement coder): a full-width banner near the bottom of a canvas. The game-styled label (W:text), then its
+-- canvas slot is re-anchored to stretch across the canvas (margin px each side, its top `bottom` px above the lower
+-- edge) and the text wraps to that width, so it fits any window size. If the slot cannot be re-anchored the fixed
+-- placement from W:text stays (never breaks the menu).
+function W:banner(parent,text,margin,bottom,h,size)
+    local t=self:text(parent,text,margin,-bottom,1500,h,size)
+    local anchored,why=pcall(function()
+        local slot=t.Slot
+        slot:SetMinimum({X=0,Y=1}); slot:SetMaximum({X=1,Y=1})
+        slot:SetAlignment({X=0,Y=0})
+        slot:SetOffsets({Left=margin,Top=-bottom,Right=margin,Bottom=h})
+        t.WrapTextAt=0; t.AutoWrapText=true
+    end)
+    if not anchored then
+        self.stage='banner fallback placement'
+        pcall(function() t.Slot:SetPosition({X=margin,Y=980}); t.Slot:SetSize({X=1500,Y=h}) end)
+        self.bannerFallback=tostring(why)
+    end
+    return t
+end
 -- One observation after attachment; optional reflection must not stop the UI.
 function W:observeLabels(log)
     local function read(fn)

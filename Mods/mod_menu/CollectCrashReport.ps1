@@ -17,6 +17,15 @@
     that is not sent (No, or an upload problem) is moved to -OutDir (default: Downloads) and the GitHub page opens.
     With -Gui (used by "Report a problem.bat", which runs this hidden) the question is a Yes/No popup and
     a sent report ends with a notice that closes by itself; there is no console window to read.
+
+    -AutoCrash (Mod Menu starts it hidden a few seconds after the game starts) reports a crash of THIS game copy by
+    itself and exits silently when there is nothing to do: it needs a valid webhook file; it looks for crash folders
+    (-CrashesRoot) that are newer than the marker in %LOCALAPPDATA%\Goobies_report\seen.txt, not yet seen, and whose
+    CrashContext RootDir/BaseDir is this game copy; every one it finds is marked seen and only the newest is reported,
+    at most 3 a day (auto_sent.txt next to the marker). Consent is %LOCALAPPDATA%\Goobies_report\consent.txt:
+    ask (default: one Yes/No popup; Yes saves auto and sends, No saves off), auto (send, then a short notice) or off;
+    CrashReports=ask|auto|off in this copy's Configs\ModMenu.ini overrides it. The first run only sets the marker.
+    GOOBIES_REPORT_SEEN / GOOBIES_REPORT_CONSENT override the two files (tests only).
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File CollectCrashReport.ps1
 .EXAMPLE
@@ -33,10 +42,11 @@ param(
     [string]$IssueUrl = 'https://github.com/gregfesta-create/goobies-mod-menu/issues/new?template=crash_report.yml',
     [string]$WebhookFile,    # Discord webhook file; default report_webhook.txt next to this script
     [long]$UploadLimitBytes = 10MB,  # largest zip sent to Discord (non-boosted servers); a bigger one is re-zipped without the dump
-    [switch]$Gui             # ask and report with popups (the .bat runs this script with no visible window)
+    [switch]$Gui,            # ask and report with popups (the .bat runs this script with no visible window)
+    [switch]$AutoCrash       # automatic crash report of this game copy (Mod Menu runs it hidden at game start)
 )
 $ErrorActionPreference = 'Stop'
-$Version = '1.4.2'
+$Version = '1.5.0'
 $MaxDumpBytes = 20MB
 $MaxLogBytes = 5MB
 $DefaultIssueUrl = 'https://github.com/gregfesta-create/goobies-mod-menu/issues/new?template=crash_report.yml'
@@ -296,14 +306,129 @@ function Show-Popup([string]$Text, [switch]$Ask, [int]$Seconds = 0) {
     $title = 'Goobies - Report a problem'
     try {
         if ($Ask) {
-            Add-Type -AssemblyName System.Windows.Forms
-            # DefaultDesktopOnly keeps the popup in front: this script has no window of its own.
-            return ([System.Windows.Forms.MessageBox]::Show($Text, $title, 'YesNo', 'Question', 'Button2', 'DefaultDesktopOnly') -eq 'Yes')
+            # Windows Script Host popup: the WinForms MessageBox returned No at once (15 ms) when the .bat started
+            # this script from Explorer. 4 Yes/No, 32 question icon, 256 No is the default, 0x40000 always on top;
+            # no answer within 10 minutes counts as No. Returns 6 for Yes, 7 for No, -1 on timeout.
+            $code = (New-Object -ComObject WScript.Shell).Popup($Text, 600, $title, 4 + 32 + 256 + 0x40000)
+            Write-RunLog "popup answer code=$code"
+            return ($code -eq 6)
         }
         # 0x40 information icon, 0x40000 always on top.
         [void](New-Object -ComObject WScript.Shell).Popup($Text, $Seconds, $title, 0x40040)
     } catch { Write-RunLog "popup error: $($_.Exception.Message)" }
     return $false
+}
+
+# ---- -AutoCrash state: consent, seen-crash marker, daily count -----------------------------------------
+$AutoDailyLimit = 3
+$AutoSeenKeep = 200
+$AutoAskText = "Goobies crashed last time. Send crash reports to the Goobies developers automatically from now on?`n`n" +
+               "Yes = send this one and future ones automatically. No = don't send."
+function Get-StateFile([string]$EnvName, [string]$Leaf) {
+    $v = [Environment]::GetEnvironmentVariable($EnvName)
+    if ($v) { return $v }
+    return Join-Path $env:LOCALAPPDATA "Goobies_report\$Leaf"
+}
+function Write-StateText([string]$File, [string]$Text) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $File) | Out-Null
+    [IO.File]::WriteAllText($File, $Text)
+}
+# ask | auto | off. This copy's Configs\ModMenu.ini (CrashReports=auto|off) is the Mod Menu setting and wins; it is saved.
+function Read-Consent([string]$Win64) {
+    $file = Get-StateFile 'GOOBIES_REPORT_CONSENT' 'consent.txt'
+    $ini = Join-Path $Win64 'Configs\ModMenu.ini'
+    if (Test-Path -LiteralPath $ini -PathType Leaf) {
+        try {
+            $m = [regex]::Match((Read-Shared $ini), '(?im)^\s*CrashReports\s*=\s*(auto|off)\s*$')
+            if ($m.Success) {
+                $v = $m.Groups[1].Value.ToLower()
+                $old = if (Test-Path -LiteralPath $file) { ([IO.File]::ReadAllText($file)).Trim().ToLower() } else { '' }
+                if ($old -ne $v) { Write-StateText $file "$v`r`n" }
+                return $v
+            }
+        } catch { }
+    }
+    try {
+        if (Test-Path -LiteralPath $file -PathType Leaf) {
+            $v = ([IO.File]::ReadAllText($file)).Trim().ToLower()
+            if ($v -in 'ask', 'auto', 'off') { return $v }
+        }
+    } catch { }
+    return 'ask'
+}
+function Save-Consent([string]$Value) { Write-StateText (Get-StateFile 'GOOBIES_REPORT_CONSENT' 'consent.txt') "$Value`r`n" }
+# seen.txt: "since=<UTC time>" (no older crash is ever reported) and one handled crash folder name per line.
+function Read-Seen {
+    $file = Get-StateFile 'GOOBIES_REPORT_SEEN' 'seen.txt'
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $null }
+    $lines = @([IO.File]::ReadAllLines($file) | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $since = $null
+    if ($lines.Count -and $lines[0] -match '^since=(.+)$') {
+        try { $since = [datetime]::Parse($Matches[1], [Globalization.CultureInfo]::InvariantCulture, 'RoundtripKind').ToUniversalTime() } catch { }
+    }
+    if (-not $since) { return $null }
+    return [pscustomobject]@{ Since = $since; Names = @($lines | Select-Object -Skip 1) }
+}
+function Save-Seen([datetime]$Since, [string[]]$Names) {
+    $keep = @($Names | Where-Object { $_ } | Select-Object -Unique | Select-Object -Last $AutoSeenKeep)
+    Write-StateText (Get-StateFile 'GOOBIES_REPORT_SEEN' 'seen.txt') (((@('since=' + $Since.ToUniversalTime().ToString('o')) + $keep) -join "`r`n") + "`r`n")
+}
+# The game folder a crash came from (CrashContext RootDir, else BaseDir minus Shooter\Binaries\Win64), or $null.
+function Get-CrashGameDir([string]$CrashDir) {
+    $ctx = Join-Path $CrashDir 'CrashContext.runtime-xml'
+    if (-not (Test-Path -LiteralPath $ctx -PathType Leaf)) { return $null }
+    try { $raw = Read-Shared $ctx } catch { return $null }
+    foreach ($tag in 'RootDir', 'BaseDir') {
+        $m = [regex]::Match($raw, "<$tag>([^<]+)</$tag>")
+        if (-not $m.Success) { continue }
+        try { $dir = [IO.Path]::GetFullPath($m.Groups[1].Value).TrimEnd('\') } catch { continue }
+        if ($tag -eq 'BaseDir') { $dir = $dir -replace '(?i)\\Shooter\\Binaries\\Win64$', '' }
+        return $dir
+    }
+    return $null
+}
+# True when the crash folder's CrashContext RootDir/BaseDir is $Root (or inside it).
+function Test-CrashOfCopy([string]$CrashDir, [string]$Root) {
+    $dir = Get-CrashGameDir $CrashDir
+    return [bool]($dir -and ($dir -ieq $Root -or $dir.StartsWith($Root + '\', [StringComparison]::OrdinalIgnoreCase)))
+}
+# Decides whether to report now. Returns the crash folder to report, or $null (nothing to do; the reason is logged).
+function Invoke-AutoPreflight([string]$Root, [string]$Win64, [string]$Crashes) {
+    if ((Read-Webhook).State -ne 'ok') { Write-RunLog 'auto: no webhook'; return $null }
+    $consent = Read-Consent $Win64
+    if ($consent -eq 'off') { Write-RunLog 'auto: consent off'; return $null }
+    $seen = Read-Seen
+    if (-not $seen) { Save-Seen (Get-Date).ToUniversalTime() @(); Write-RunLog 'auto: first run, marker set'; return $null }
+    $new = @()
+    if (Test-Path -LiteralPath $Crashes -PathType Container) {
+        $new = @(Get-ChildItem -LiteralPath $Crashes -Directory |
+                 Where-Object { $_.LastWriteTimeUtc -gt $seen.Since -and $seen.Names -notcontains $_.Name -and (Test-CrashOfCopy $_.FullName $Root) } |
+                 Sort-Object LastWriteTimeUtc -Descending)
+    }
+    if (-not $new.Count) { Write-RunLog 'auto: no new crash'; return $null }
+    Save-Seen $seen.Since (@($seen.Names) + @($new | ForEach-Object { $_.Name }))
+    Write-RunLog "auto: new crashes=$($new.Count) consent=$consent"
+    $daily = Join-Path (Split-Path -Parent (Get-StateFile 'GOOBIES_REPORT_SEEN' 'seen.txt')) 'auto_sent.txt'
+    $today = (Get-Date).ToString('yyyy-MM-dd')
+    $days = @(if (Test-Path -LiteralPath $daily) { [IO.File]::ReadAllLines($daily) | ForEach-Object { $_.Trim() } | Where-Object { $_ } })
+    if (@($days | Where-Object { $_ -eq $today }).Count -ge $AutoDailyLimit) { Write-RunLog 'auto: daily limit reached'; return $null }
+    if ($consent -eq 'ask') {
+        Write-RunLog 'auto: asked (popup)'
+        if (-not (Show-Popup $AutoAskText -Ask)) { Save-Consent 'off'; Write-RunLog 'auto: answer=no, consent off'; return $null }
+        Save-Consent 'auto'; Write-RunLog 'auto: answer=yes, consent auto'
+    }
+    Write-StateText $daily (((@($days | Select-Object -Last 20) + $today) -join "`r`n") + "`r`n")
+    return $new[0]
+}
+# "active (gmp_host.log written 3m before the crash)" when a GoobiesMP log was written in the 5 minutes before it.
+function Get-MultiplayerNote($Crash, [string]$MpDir) {
+    if (-not $Crash -or -not $MpDir -or -not (Test-Path -LiteralPath $MpDir -PathType Container)) { return 'not active' }
+    $t = $Crash.LastWriteTime
+    $log = Get-ChildItem -LiteralPath $MpDir -File | Where-Object { $_.Name -match '^gmp(_[^\\/]*)?\.log$' -and
+             $_.LastWriteTime -ge $t.AddMinutes(-5) -and $_.LastWriteTime -le $t.AddMinutes(1) } |
+           Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if (-not $log) { return 'not active' }
+    return 'active ({0} written {1} before the crash)' -f $log.Name, (Format-Span ($t - $log.LastWriteTime))
 }
 
 # 'in your Downloads folder' or 'in <folder>' for where the zip ends up (a staged zip: where it is moved if kept).
@@ -329,7 +454,9 @@ function Get-DownloadsFolder {
 # Returns $true only when Discord accepted the report.
 function Send-Report([string]$Url) {
     $answer = $null
-    if ($Gui) {
+    if ($AutoCrash) {
+        $answer = 'y'; Write-RunLog 'auto: sending (consent given)'
+    } elseif ($Gui) {
         $q = "A problem report was made (game logs, mod settings and the newest crash dump; your name and IDs are removed).`n`nSend it to the Goobies MP developers?"
         Write-RunLog 'asked (popup)'
         if (Show-Popup $q -Ask) { $answer = 'y' }
@@ -377,10 +504,16 @@ function Send-Report([string]$Url) {
         $versions = @($modVersions | Where-Object { $_ -like 'GoobiesMP *' } | ForEach-Object { 'Goobies MP' + $_.Substring(9) }) +
                     @($modVersions | Where-Object { $_ -notlike 'GoobiesMP *' })
         $mods = if ($versions.Count) { $versions -join ', ' } else { 'none found' }
-        $message = Protect-Text (@("Goobies crash report (CollectCrashReport $Version)",
-            "Report time: $($now.ToString('yyyy-MM-dd HH:mm:ss zzz'))", "Mods: $mods", "Crash dump: $dumpState") + @($dumpNoteText | Where-Object { $_ }) -join "`n")
+        $kind = if ($AutoCrash) { 'Automatic crash report' } else { 'Goobies crash report' }
+        $autoLines = @()
+        if ($AutoCrash -and $crash) {
+            $autoLines = @("Crash: $($crash.Name) at $($crash.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'))", "Multiplayer: $(Get-MultiplayerNote $crash $mpDir)")
+        }
+        $message = Protect-Text (@("$kind (CollectCrashReport $Version)",
+            "Report time: $($now.ToString('yyyy-MM-dd HH:mm:ss zzz'))", "Mods: $mods") + $autoLines + @("Crash dump: $dumpState") + @($dumpNoteText | Where-Object { $_ }) -join "`n")
         if ($message.Length -gt 1900) { $message = $message.Substring(0, 1900) }
-        $thread = Protect-Text ("Crash report $($now.ToString('yyyy-MM-dd HH:mm')) - $mods")
+        $threadKind = if ($AutoCrash) { 'Automatic crash report' } else { 'Crash report' }
+        $thread = Protect-Text ("$threadKind $($now.ToString('yyyy-MM-dd HH:mm')) - $mods")
         if ($thread.Length -gt 100) { $thread = $thread.Substring(0, 97) + '...' }
 
         Write-Output 'Sending...'
@@ -402,7 +535,9 @@ function Send-Report([string]$Url) {
     }
 }
 
-Write-RunLog "start version=$Version gui=$Gui pid=$PID" -New
+Write-RunLog "start version=$Version gui=$Gui auto=$AutoCrash pid=$PID" -New
+# -AutoCrash runs hidden: popups only, never a folder, a page or Notepad.
+if ($AutoCrash) { $Gui = [switch]$true; $NoExplorer = [switch]$true }
 if (-not $OutDir) { $OutDir = Get-DownloadsFolder }
 if (-not $OutDir) { $OutDir = $env:USERPROFILE }
 $uploadStage = $null; $keepFull = $false
@@ -437,6 +572,29 @@ try {
     Write-Output "Game folder: $GameDir"
     $win64 = Join-Path $GameDir 'Shooter\Binaries\Win64'
     if (-not $CrashesRoot) { $CrashesRoot = Join-Path $env:LOCALAPPDATA 'Shooter\Saved\Crashes' }
+    $autoCrashDir = $null
+    if ($AutoCrash) {
+        $autoCrashDir = Invoke-AutoPreflight $GameDir $win64 $CrashesRoot
+        if (-not $autoCrashDir) { Write-RunLog 'end auto: nothing to do'; exit 0 }
+    }
+    # The crash to report: -AutoCrash's pick, else the newest crash folder.
+    $crash = $autoCrashDir
+    if (-not $crash -and (Test-Path -LiteralPath $CrashesRoot)) {
+        $crash = Get-ChildItem -LiteralPath $CrashesRoot -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    }
+    # A crash of another game copy that exists on this PC: report that copy's logs and configs, not the detected one's.
+    $collectedNote = $null
+    if ($crash) {
+        $crashGame = Get-CrashGameDir $crash.FullName
+        if ($crashGame -and -not ($crashGame -ieq $GameDir -or $crashGame.StartsWith($GameDir + '\', [StringComparison]::OrdinalIgnoreCase)) -and
+            (Test-GameRoot $crashGame)) {
+            $collectedNote = "Logs and configs collected from the copy the crash came from: $crashGame (the detected copy was $GameDir)."
+            Write-Output $collectedNote
+            Write-RunLog 'collecting from the crashed copy'
+            $GameDir = (Resolve-Path -LiteralPath $crashGame).Path.TrimEnd('\')
+            $win64 = Join-Path $GameDir 'Shooter\Binaries\Win64'
+        }
+    }
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
     # ---- 2. logs and configuration ---------------------------------------------------------
@@ -478,10 +636,6 @@ try {
     }
 
     # ---- 3. newest crash folder and newest dump ----------------------------------------------
-    $crash = $null
-    if (Test-Path -LiteralPath $CrashesRoot) {
-        $crash = Get-ChildItem -LiteralPath $CrashesRoot -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    }
     $dumps = @(Get-ChildItem -LiteralPath $win64 -File -Filter 'crash_*.dmp')
     $ctxRaw = ''
     if ($crash) {
@@ -542,7 +696,7 @@ try {
         "Game executables: $(if ($exes) { $exes -join ', ' } else { 'none found' })",
         "Newest crash folder: $crashTime",
         "Mod versions: $(if ($modVersions.Count) { $modVersions -join ', ' } else { 'none found' })"
-    ) + @($warnings | ForEach-Object { "WARNING: $_" }) + @($dumpNote, 'Included files:') + $fileLines +
+    ) + @($collectedNote | Where-Object { $_ }) + @($warnings | ForEach-Object { "WARNING: $_" }) + @($dumpNote, 'Included files:') + $fileLines +
         @($skipped | ForEach-Object { "Skipped (could not read): $_" })
     [IO.File]::WriteAllText((Join-Path $stage 'summary.txt'), (Protect-Text ($summary -join "`r`n")))
 
@@ -572,7 +726,7 @@ try {
     if ($zipPath -and -not $zipDone -and (Test-Path -LiteralPath $zipPath -PathType Leaf)) { Remove-Item -LiteralPath $zipPath -Force }
     if ($uploadStage) { Remove-Item -LiteralPath $uploadStage -Recurse -Force -ErrorAction SilentlyContinue }
     Write-RunLog "failed: $($_.Exception.Message)"
-    Write-Failure $_.Exception.Message
+    if (-not $AutoCrash) { Write-Failure $_.Exception.Message }   # an automatic run stays silent
     exit 1
 } finally {
     Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
@@ -614,10 +768,12 @@ Write-Output ''
 if ($sent) {
     if ($removed) {
         Write-Output 'The report file was removed from this PC (the developers have it).'
-        if ($Gui) { Show-Popup "Report sent. Thank you!`n`nThis message closes by itself." -Seconds 5 | Out-Null }
+        if ($AutoCrash) { Show-Popup "Goobies crashed last time; a crash report was sent automatically. Thank you!`n`nThis message closes by itself." -Seconds 5 | Out-Null }
+        elseif ($Gui) { Show-Popup "Report sent. Thank you!`n`nThis message closes by itself." -Seconds 5 | Out-Null }
     } else {
         Write-Output "The full report (with the crash dump) is $where`: $zipName"
-        if ($Gui) { Show-Popup "Report sent. Thank you!`n`nThe crash dump was too big to send; the full report is $where`. This message closes by itself." -Seconds 5 | Out-Null }
+        $first = if ($AutoCrash) { 'A crash report was sent automatically. Thank you!' } else { 'Report sent. Thank you!' }
+        if ($Gui) { Show-Popup "$first`n`nThe crash dump was too big to send; the full report is $where`. This message closes by itself." -Seconds 5 | Out-Null }
     }
 } else {
     Write-Output "Issue page: $IssueUrl"

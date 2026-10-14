@@ -1,7 +1,7 @@
 -- Engine-independent registry and startup policy. No native loader claims.
 local Ini = require('mm_ini')
 local M = {}; M.__index = M
-M.VERSION = '1.0.1'
+M.VERSION = '1.1.0-test.1'
 function M.identifier(s) return type(s) == 'string' and s:match('^[%w_%-]+$') ~= nil end
 function M.safeId(s)
     if not M.identifier(s) then return false end
@@ -19,6 +19,8 @@ function M.manifest(text)
     end
     if p.Entry and p.Entry ~= 'Package/main.lua' then return nil, 'Entry must be Package/main.lua' end
     if p.LiveToggle and p.LiveToggle~='true' and p.LiveToggle~='false' then return nil,'LiveToggle must be true or false' end
+    if p.InternalService and p.InternalService~='true' and p.InternalService~='false' then return nil,'InternalService must be true or false' end
+    if p.InternalService=='true' and p.Entry then return nil,'InternalService cannot hide a managed mod entry' end
     local dependencies,optional={},{ }
     local section,seen='',{}
     for _,line in ipairs(Ini.lines(text)) do
@@ -37,7 +39,7 @@ function M.manifest(text)
     end
     return { id = p.Id, name = p.Name or p.Id, version = p.Version,
         updatedDate=Ini.date(p.Updated) and p.Updated or '?',
-        entry = p.Entry, default = p.DefaultEnabled == 'true', liveToggle=p.LiveToggle=='true', dependencies=dependencies,optionalDependencies=optional }
+        entry = p.Entry, default = p.DefaultEnabled == 'true', liveToggle=p.LiveToggle=='true', internalService=p.InternalService=='true', dependencies=dependencies,optionalDependencies=optional }
 end
 function M.new(fs, path, log, options)
     options=options or {}
@@ -156,20 +158,11 @@ function M:save(changes)
     if self.blocked then return nil,self.blocked end
     local disk,err = self.fs.read(self.path)
     if err and err~='missing' then return nil,'Cannot read ModList.ini: '..err end
-    if disk ~= self.diskText then return nil, 'ModList.ini changed externally. Refresh before editing.' end
     if self.legacyPath then
         local old,why=self.fs.read(self.legacyPath)
         if old~=self.legacyText or (why and why~='missing') then return nil,'Legacy registry changed during migration; restart before editing.' end
     end
     local nextText = self.text
-    if not self.reportedUnknown then
-        for id in pairs(self.records) do
-            local known=false
-            for registered in pairs(self.byId) do if registered:lower()==id then known=true end end
-            if not known then self.log('Unregistered registry entry preserved without execution: '..id) end
-        end
-        self.reportedUnknown=true
-    end
     for _, p in ipairs(self.mods) do
         local enabled = changes and changes[p.id]
         if enabled == nil then enabled = p.enabled end
@@ -180,6 +173,19 @@ function M:save(changes)
             if p.registryComment then value=value..' '..p.registryComment end
             nextText=Ini.set(nextText,'Mods',p.id,value,true)
         end
+    end
+    if disk ~= self.diskText then
+        -- Game windows sharing one install boot together: another window may have just written exactly this registry.
+        if disk == nil or disk ~= nextText then return nil, 'ModList.ini changed externally. Refresh before editing.' end
+        self.text, self.diskText, self.legacyPath = disk, disk, nil
+    end
+    if not self.reportedUnknown then
+        for id in pairs(self.records) do
+            local known=false
+            for registered in pairs(self.byId) do if registered:lower()==id then known=true end end
+            if not known then self.log('Unregistered registry entry preserved without execution: '..id) end
+        end
+        self.reportedUnknown=true
     end
     if nextText ~= self.diskText then
         local ok, err = self.fs.replace(self.path, nextText)

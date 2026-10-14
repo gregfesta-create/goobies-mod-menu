@@ -1,5 +1,20 @@
 # Mod Menu changelog
 
+## 1.1.0-test.1 — 2026-10-14
+
+Test build (GitHub pre-release). Needed by Goobies Multiplayer 1.0.0-test.2 and later.
+
+- `Report a problem.bat` ships in `Mods\mod_menu`: one double-click collects the logs into a zip (personal
+  information removed) and opens the crash-report page. Mod Menu also notices a new crash of this game copy at start.
+- Several game windows can share one install: settings and the mod list are written safely when windows write at the
+  same time, and an unchanged file is never rewritten.
+- New button registry and group tree for other mods. Mod Menu on its own no longer moves any menu button; a menu
+  changes only when another mod (such as Menu Options) styles it.
+- Achievement guard support (D57): Mod Menu reads the guard's status. This build does not include the native guard
+  yet, so the main menu shows a notice that achievements are not blocked; play stays allowed.
+- Bundled UE4SS runtime updated to the one used in the Goobies Multiplayer tests (UE4SS v3.0.1-1164-g5e627997).
+- The achievement guard DLL of 1.0.1 is no longer included (it returns as part of Mod Menu in a later build).
+
 ## 1.0.1 — 2026-10-10
 
 - Fixed slider tooltips keeping the last value when entering from above or moving along the line. They now calculate the nearest tick from the pointer position.

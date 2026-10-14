@@ -4,6 +4,9 @@ local scripts=assert(source:match('^@(.*)[/\\]main%.lua$'),'Cannot locate mod_me
 package.path=scripts .. '/?.lua;' .. package.path
 local function log(message) print('[mod_menu] ' .. tostring(message) .. '\n') end
 local ok,err=pcall(function()
+    -- D57: Mod Menu's achievement block (native ModMenuGuard); one MMGUARD line now, the notice on the main menu
+    local guard=require('mm_guard').new(_G,log)
+    guard:start()
     local FS=require('mm_platform'); local Core=require('mm_core')
     local tree=IterateGameDirectories()
     local paths=FS.paths(source,tree)
@@ -40,6 +43,11 @@ local ok,err=pcall(function()
     end
     local ui
     local menuStyles={}
+    local gameMenuStyles={}
+    local menuBackHandlers={}
+    local mainMenuButtons={}
+    local navigationSerial=0
+    local escapePreference
     local function context(p)
         local config=paths.configs .. '/' .. p.id .. '.ini'
         -- Context is requested only for enabled packages during startup.
@@ -47,13 +55,63 @@ local ok,err=pcall(function()
         if defaultError and defaultError~='missing' then error(defaultError) end
         local prepared,problem=FS.prepareSettings(config,initial)
         assert(prepared,problem)
-        return {id=p.id,packagePath=p.folder,configPath=config,readConfig=function() return FS.read(config) end,
+        return {id=p.id,packagePath=p.folder,configPath=config,Widgets=require('mm_widgets'),readConfig=function() return FS.read(config) end,
             writeConfig=function(text) return FS.replace(config,text) end,
             query=function(id) return core:query(id) end,
             requestMenuBack=function() if ui then ui:requestBack() end end,
+            registerMenuBack=function(callback)
+                assert(type(callback)=='function','Expected menu back callback')
+                menuBackHandlers[p.id]=callback
+                return function() if menuBackHandlers[p.id]==callback then menuBackHandlers[p.id]=nil end end
+            end,
+            registerMenuNavigation=function(descriptor)
+                assert(type(descriptor)=='table' and type(descriptor.id)=='string' and type(descriptor.isVisible)=='function'
+                    and type(descriptor.back)=='function','Expected menu navigation descriptor')
+                local key=p.id..':'..descriptor.id
+                assert(menuBackHandlers[key]==nil,'Duplicate menu navigation id')
+                navigationSerial=navigationSerial+1
+                local item={owner=p.id,id=descriptor.id,isVisible=descriptor.isVisible,back=descriptor.back,
+                    canBack=descriptor.canBack,priority=descriptor.priority or 0,serial=navigationSerial,generation=1}
+                assert(type(item.priority)=='number' and item.priority==math.floor(item.priority) and math.abs(item.priority)<=1000,'Invalid menu navigation priority')
+                menuBackHandlers[key]=item
+                return function() if menuBackHandlers[key]==item then menuBackHandlers[key]=nil end end,
+                    function()
+                        if menuBackHandlers[key]~=item then return false end
+                        navigationSerial=navigationSerial+1;item.serial=navigationSerial;item.generation=item.generation+1;return true
+                    end
+            end,
+            registerMainMenuButton=function(menu,descriptor)
+                local key=p.id..':'..tostring(descriptor and descriptor.id)
+                local old=mainMenuButtons[key]
+                assert(not old or (not old.active and not old.restore and not old.cleanupPending),'Duplicate or retained main-menu button id')
+                local handle,why,retained=require('mm_main_menu_button').Create(_G,require('mm_widgets'),menu,descriptor)
+                mainMenuButtons[key]=handle or retained
+                return handle,why,retained
+            end,
+            mainMenuButtonStyle=function(button)
+                for _,handle in pairs(mainMenuButtons) do
+                    if handle.active and handle.widget:IsValid() and button and button:IsValid()
+                        and handle.widget:GetFullName()==button:GetFullName() then
+                        return {styleRole=handle.styleRole,baseFontSize=handle.baseFontSize}
+                    end
+                end
+            end,
+            registerEscapePreference=function(callback)
+                assert(type(callback)=='function','Expected Escape preference callback')
+                escapePreference=callback
+            end,
             registerMainMenuStyle=function(callback)
                 assert(type(callback)=='function','Expected main menu style callback')
                 menuStyles[p.id]=callback
+            end,
+            registerGameMenuStyle=function(callback,cleanup)
+                assert(type(callback)=='function' and type(cleanup)=='function','Expected game menu style and cleanup')
+                local previous=gameMenuStyles[p.id]
+                if previous then pcall(previous.cleanup) end
+                local item={tick=callback,cleanup=cleanup};gameMenuStyles[p.id]=item
+                return function()
+                    if gameMenuStyles[p.id]==item then gameMenuStyles[p.id]=nil;pcall(cleanup) end
+                end
             end,
             registerSettings=function(provider) core:provider(p.id,provider) end,
             invalidate=function() core.dirtyProviders[p.id]=true end,
@@ -70,10 +128,25 @@ local ok,err=pcall(function()
     local UI=require('mm_ui'); local Restart=require('mm_restart')
     ui=UI.new(_G,core,paths,log,Restart.new(_G,paths,log))
     ui.menuStyles=menuStyles
+    ui.gameMenuStyles=gameMenuStyles
+    ui.menuBackHandlers=menuBackHandlers
+    if Key and Key.ESCAPE and type(RegisterKeyBind)=='function' then
+        RegisterKeyBind(Key.ESCAPE,function()
+            local allow=true
+            if escapePreference then local success,value=pcall(escapePreference);allow=success and value==true end
+            ui:requestBack(allow)
+        end)
+    end
     ui.status=core.warning
+    ui.guardNotice=function() return guard:notice() end   -- D57: read when the main menu is built (the proof may still be pending here)
+    if type(LoopAsync)=='function' then LoopAsync(10000,function() pcall(guard.tick,guard); return false end) end
     ui:start()
     -- State-local inspection handle; not an inter-mod-Lua-state communication claim.
-    ModMenuManager={registry=core,ui=ui,paths=paths}
+    ModMenuManager={registry=core,ui=ui,paths=paths,guard=guard}
+    -- Automatic crash reports (hidden collector run, deferred a few seconds); never allowed to break startup.
+    local crashOk,crashStarted=pcall(function() return require('mm_crash_report').start(paths,log,nil,_G) end)
+    if not crashOk then log('Crash report check failed: '..tostring(crashStarted)) end
+    ModMenuManager.crashReport=crashOk and crashStarted==true
     log('Initialized standalone manager ' .. Core.VERSION)
 end)
 if not ok then log('Initialization failed: ' .. tostring(err)) end
