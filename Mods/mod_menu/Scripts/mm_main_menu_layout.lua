@@ -1,6 +1,17 @@
 -- One layout owner for native controls and all addon entries. Dimensions are
 -- UMG logical units; the minimum gap is converted from physical pixels.
 local L={};L.__index=L
+-- Coder C (2026-10-14): structural refusals of Bind. The native menu does not have the shape the layout needs (for
+-- example the leaderboard toggle lives in WBP_Leaderboard's own widget tree, outside the main-menu tree), so nothing
+-- moves and the menu stays native. Raised without a file position; Mod Menu logs them as one quiet line.
+L.NATIVE_REASONS={'Main-menu root is not a verified CanvasPanel','Native footer controls unavailable',
+ 'Main-menu column hierarchy changed','Footer hierarchy unavailable','Native parent missing','Unsupported native parent slot'}
+function L.Native(reason)
+ reason=tostring(reason or '')
+ for _,r in ipairs(L.NATIVE_REASONS)do if reason==r or reason:sub(1,#r+2)==r..': ' then return true end end
+ return false
+end
+local function need(ok,reason)if not ok then error(reason,0)end;return ok end
 local function finite(n)return type(n)=='number' and n==n and n>0 and n<math.huge end
 local function valid(o)return o and o:IsValid()end
 local function name(o)return o:GetFullName()end
@@ -66,7 +77,7 @@ local function slotCopy(s)
   return {kind='canvas',anchors={Minimum={X=a.Minimum.X,Y=a.Minimum.Y},Maximum={X=a.Maximum.X,Y=a.Maximum.Y}},
    offsets={Left=o.Left,Top=o.Top,Right=o.Right,Bottom=o.Bottom},align={X=v.X,Y=v.Y},auto=s.bAutoSize,z=s.ZOrder}
  end
- assert(kind:find('VerticalBoxSlot',1,true)or kind:find('HorizontalBoxSlot',1,true)or kind:find('OverlaySlot',1,true),'Unsupported native parent slot')
+ need(kind:find('VerticalBoxSlot',1,true)or kind:find('HorizontalBoxSlot',1,true)or kind:find('OverlaySlot',1,true),'Unsupported native parent slot')
  local p=s.Padding;local v={kind='panel',pad={Left=p.Left,Top=p.Top,Right=p.Right,Bottom=p.Bottom},h=s.HorizontalAlignment,v=s.VerticalAlignment}
  if not kind:find('OverlaySlot',1,true)then v.size={SizeRule=s.Size.SizeRule,Value=s.Size.Value}end
  return v
@@ -97,18 +108,18 @@ end
 function L.Bind(G,w,menu)
  local column=menu.Play:GetParent()
  local root=menu.WidgetTree.RootWidget
- assert(valid(root)and root:GetClass():GetFullName():find('CanvasPanel',1,true),'Main-menu root is not a verified CanvasPanel')
+ need(valid(root)and root:GetClass():GetFullName():find('CanvasPanel',1,true),'Main-menu root is not a verified CanvasPanel')
  -- Some designer widgets are not IsVariable and have no UserWidget field.
  -- Locate only the pinned exact native name/class; never create a replacement.
  local version=menu.versionnumber
  if not valid(version)then version=nativeChild(root,'versionnumber','HorizontalBox')end
  local footer={menu.WBP_Leaderboard and menu.WBP_Leaderboard.button_toggleLeaderboard,menu.wishlistnewgame,version}
- for i=1,3 do assert(valid(footer[i]),'Native footer controls unavailable: '..i)end
- assert(valid(column)and ancestor(column,root),'Main-menu column hierarchy changed')
+ for i=1,3 do need(valid(footer[i]),'Native footer controls unavailable: '..i)end
+ need(valid(column)and ancestor(column,root),'Main-menu column hierarchy changed')
  local snapshots,seen={},{}
  local function capture(o)
-  assert(valid(o)and ancestor(o,root),'Footer hierarchy unavailable')
-  local parent=o:GetParent();assert(valid(parent),'Native parent missing')
+  need(valid(o)and ancestor(o,root),'Footer hierarchy unavailable')
+  local parent=o:GetParent();need(valid(parent),'Native parent missing')
   local key=name(parent);if seen[key]then return end;seen[key]=true
   local rows={};for i=0,parent:GetChildrenCount()-1 do local child=parent:GetChildAt(i);rows[#rows+1]={widget=child,slot=slotCopy(child.Slot)}end
   snapshots[#snapshots+1]={parent=parent,rows=rows}

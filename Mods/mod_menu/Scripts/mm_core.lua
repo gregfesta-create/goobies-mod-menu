@@ -1,7 +1,7 @@
 -- Engine-independent registry and startup policy. No native loader claims.
 local Ini = require('mm_ini')
 local M = {}; M.__index = M
-M.VERSION = '1.1.0-test.2'
+M.VERSION = '1.1.0-test.3'
 function M.identifier(s) return type(s) == 'string' and s:match('^[%w_%-]+$') ~= nil end
 function M.safeId(s)
     if not M.identifier(s) then return false end

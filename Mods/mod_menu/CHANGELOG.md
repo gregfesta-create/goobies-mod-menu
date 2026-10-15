@@ -1,5 +1,13 @@
 # Mod Menu changelog
 
+## 1.1.0-test.3 — 2026-10-14
+
+Test build (the `-test` in the version marks it). Needed by Goobies Multiplayer 1.0.0-test.4 and later.
+
+- No more false "Footer hierarchy unavailable" error in crash reports. When the main menu's layout cannot be shared,
+  Mod Menu now notes it in one quiet log line and leaves the menu as the game made it (it never changed the menu
+  before either). Real errors are still logged in full.
+
 ## 1.1.0-test.2 — 2026-10-14
 
 Test build (the `-test` in the version marks it). Needed by Goobies Multiplayer 1.0.0-test.3 and later.

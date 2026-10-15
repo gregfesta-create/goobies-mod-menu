@@ -1,7 +1,7 @@
 # Mod Menu for Goobies
 
 The mod manager every Goobies mod uses: it lists your mods, turns them on and off, holds their settings and brings the
-UE4SS mod loader. **Version 1.1.0-test.2 is a test build.**
+UE4SS mod loader. **Version 1.1.0-test.3 is a test build.**
 
 ## Requirements
 
@@ -13,7 +13,7 @@ UE4SS mod loader. **Version 1.1.0-test.2 is a test build.**
    (the folder with `Shooter-Win64-Shipping.exe`); below this is called `Win64`.
 2. If you already use other UE4SS mods, back up `UE4SS.dll`, `dwmapi.dll` and `UE4SS-settings.ini` in `Win64`.
 3. If Windows marks the zip as blocked: right-click it, *Properties*, tick **Unblock**.
-4. Put `goobies_mod_menu_1.1.0-test.2.zip` into `Win64` and extract it there (*right-click > Extract All*, target `Win64` itself).
+4. Put `goobies_mod_menu_1.1.0-test.3.zip` into `Win64` and extract it there (*right-click > Extract All*, target `Win64` itself).
 5. Start Goobies through Steam. *Mods* is in the main menu.
 
 ## Achievements

@@ -812,7 +812,15 @@ function UI:tick()
         elseif ok and retained then self.mainMenuLayout=retained
         else
             local reason=tostring(ok and why or layout)
-            if not reason:find('Awaiting native',1,true)then self.mainMenuLayoutRefused=true;pcall(self.log,'Shared main-menu layout unavailable: '..reason)end
+            if not reason:find('Awaiting native',1,true)then
+                self.mainMenuLayoutRefused=true
+                -- Coder C (2026-10-14): the native menu lacks the shape the layout needs (mm_main_menu_layout.Native):
+                -- one quiet line, the menu stays native; anything else is a real error with its full reason.
+                local layoutModule=package.loaded['mm_main_menu_layout']
+                if type(layoutModule)=='table' and type(layoutModule.Native)=='function' and layoutModule.Native(reason) then
+                    pcall(self.log,'Main-menu layout stays native ('..reason..')')
+                else pcall(self.log,'Shared main-menu layout unavailable: '..reason) end
+            end
         end
     end
     if hooked and self.mainMenuLayout then
